@@ -12,11 +12,14 @@
 
 ## 技术栈
 
-Next.js 15（App Router）+ TypeScript + React 19。无 UI 框架，样式手写在 `globals.css`。  
-检索用 BM25 稀疏检索（预留稠密向量接口，配了 `EMBEDDING_*` 即启用并与 BM25 做 RRF 融合），  
+Next.js 15（App Router）+ TypeScript + React 19。无 UI 框架，样式手写在 `globals.css`。
+  
+检索用 BM25 稀疏检索（预留稠密向量接口，配了 `EMBEDDING_*` 即启用并与 BM25 做 RRF 融合），
+  
 生成侧接任意 OpenAI 兼容网关。**会话状态存在进程内存里，不依赖任何数据库。**
-
-## 快速开始
+已经部署的网页链接
+https://86cc2cd43d624ebe9381b1e355c489c6.sg.agentos-app.run/
+## 本地快速开始
 
 ```bash
 npm install
