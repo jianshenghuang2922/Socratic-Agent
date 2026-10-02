@@ -9,6 +9,7 @@
 - **不使用 Tailwind**，样式全部手写在 `src/app/globals.css`。
 - 后端将来跑在同一个 Next 应用里（`.env` 已有 CodeBuddy Agent SDK 配置、`PORT=3000`）。
 - 数据库规划为 PostgreSQL（`.env.example` 的 `DATABASE_URL`）。
+  - ⚠️ **2026-10-02 更正：项目实际上不使用任何数据库**，会话状态在 `src/server/store.ts` 的进程内存里（`globalThis.__socraticStore`）。`src` 对 `DATABASE_URL` / prisma 零引用，无 prisma 目录、无数据库驱动依赖。那行 `DATABASE_URL` 是遗留的规划项，已从 `.env.example` 删除 —— 它会导致云发布预检误判「需要 PostgreSQL」而拒绝部署。
 
 ## 视觉规范
 - **深色玻璃拟态（glassmorphism）**，浅色方案已废弃。
@@ -49,6 +50,21 @@ POST /api/agent/grade     { contextId, type, questionId, selectedIndex | questio
 - **切换题型（选择题 ↔ 简答题）时，未作答的旧题会被标记 `abandoned`**（`Question.abandoned`），卡片显示「此题已作废（题型已切换）」并禁用交互，同时立即出新题。
   - 不要退回「有未作答的题就不动作」——那是静默无反应的 bug。
   - `isPendingQuestion` / `pendingQuestionId` / `MessageList.showNext` 都已排除 abandoned。
+
+## 部署
+
+线上地址：`https://86cc2cd43d624ebe9381b1e355c489c6.sg.agentos-app.run`（http-service）。
+
+重发时必须带这些参数（默认值跑不起来）：
+
+```
+language=node  port=3000  installCmd="npm install"
+startCmd="npm run build && npx next start"
+```
+
+- **startCmd 里必须显式 `npm run build &&`** —— 平台不会自动 build，否则报 `Could not find a production build in the '.next' directory`。
+- **不要用 `next`**（不在 PATH），用 `npx next`。
+- **不要在 startCmd 里写 `$PORT` / `-p` / `-H`** —— 沙箱 zsh 不展开 `$PORT`，端口和 `0.0.0.0` 由 `next.config.mjs` 读 `process.env.PORT` 处理。
 
 ## 工作流偏好
 - 改完前端要**实际截图验证**，不能只看编译通过。流程见 skill `web-ui-screenshot-verify`。
