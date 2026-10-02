@@ -14,3 +14,5 @@ prisma/dev.db
 
 # 本地临时文件（联调脚本、接口响应快照等）
 .tmp/
+.workbuddy
+.workbuddy-ai
