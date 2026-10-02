@@ -1,0 +1,16 @@
+node_modules/
+.next/
+out/
+coverage/
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+.env
+.env.*
+!.env.example
+prisma/dev.db
+.data/
+
+# 本地临时文件（联调脚本、接口响应快照等）
+.tmp/

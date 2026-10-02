@@ -1,0 +1,124 @@
+import { NextResponse } from 'next/server';
+import { ApiError, readJson, requireString, toErrorResponse } from '@/server/http';
+import { chat, extractJson } from '@/server/llm';
+import { gradeShortMessages } from '@/server/prompts';
+import { contextForAsk } from '@/server/rag';
+import { getAnswerKey, recordInteraction, requireContext, type Verdict } from '@/server/store';
+
+export const runtime = 'nodejs';
+export const maxDuration = 120;
+
+const VERDICTS: readonly Verdict[] = ['correct', 'partial', 'incorrect'];
+
+interface GradeBody {
+  contextId?: string;
+  type?: string;
+  /** 题目 id：出题接口返回的 id */
+  questionId?: string;
+  /** 前端也可以直接把整道题回传，从 question.id 里取 */
+  question?: { id?: string; prompt?: string };
+  selectedIndex?: number;
+  answer?: string;
+}
+
+interface GradeDraft {
+  verdict?: unknown;
+  feedback?: unknown;
+}
+
+const LETTERS = 'ABCDEFGH';
+
+/**
+ * POST /api/agent/grade
+ * body: { contextId, type, questionId, selectedIndex }   —— 选择题
+ *       { contextId, type, questionId, question, answer } —— 简答题
+ *
+ * 选择题不调模型：直接比对服务端留存的答案键，零成本、零延迟、判定确定。
+ * 简答题必须调模型：参考答案只存在服务端，模型批改后返回 verdict 与点评。
+ *
+ * 判分完成后，这次作答会作为「用户回复」写进会话记忆并进入检索索引 ——
+ * 后续出题会针对答错的知识点换角度再问。
+ */
+export async function POST(req: Request) {
+  try {
+    const body = await readJson<GradeBody>(req);
+    const ctx = requireContext(body.contextId);
+
+    const questionId = body.questionId ?? body.question?.id;
+    if (!questionId) throw new ApiError(400, '缺少必填字段：questionId');
+
+    const key = getAnswerKey(ctx.id, questionId);
+    if (!key) throw new ApiError(410, '题目答案已失效，请重新出题');
+
+    /* ---------------- 简答题：交给模型批改 ---------------- */
+    if (body.type === 'short') {
+      const prompt = requireString(body.question?.prompt ?? key.prompt, 'question.prompt', 1000);
+      const answer = requireString(body.answer, 'answer', 4000);
+      const reference = key.reference?.trim();
+      if (!reference) throw new ApiError(410, '题目答案已失效，请重新出题');
+
+      // 只喂与题目相关的资料片段，供模型核对要点
+      const bundle = await contextForAsk(ctx, prompt);
+
+      const raw = await chat(gradeShortMessages(ctx, prompt, reference, answer, bundle.text), {
+        temperature: 0.2,
+        maxTokens: 2500,
+      });
+
+      const draft = extractJson<GradeDraft>(raw, '简答题判分');
+      const verdict: Verdict = VERDICTS.includes(draft.verdict as Verdict)
+        ? (draft.verdict as Verdict)
+        : 'partial';
+      const feedback =
+        typeof draft.feedback === 'string' && draft.feedback.trim()
+          ? draft.feedback.trim().slice(0, 600)
+          : '已收到你的作答。';
+
+      recordInteraction(ctx.id, {
+        questionId,
+        prompt,
+        userAnswer: answer,
+        correct: verdict === 'correct',
+        verdict,
+        sourceLabels: key.sourceLabels ?? [],
+        knowledge: [reference, feedback].filter(Boolean).join('\n'),
+      });
+
+      return NextResponse.json({ verdict, feedback, reference });
+    }
+
+    /* ---------------- 选择题：纯服务端比对 ---------------- */
+    if (typeof key.correctIndex !== 'number') {
+      throw new ApiError(410, '题目答案已失效，请重新出题');
+    }
+
+    const selectedIndex = Number(body.selectedIndex);
+    if (!Number.isInteger(selectedIndex)) {
+      throw new ApiError(400, '缺少必填字段：selectedIndex');
+    }
+
+    const correct = selectedIndex === key.correctIndex;
+
+    if (key.prompt) {
+      const options = key.options ?? [];
+      const pick = options[selectedIndex];
+      recordInteraction(ctx.id, {
+        questionId,
+        prompt: key.prompt,
+        userAnswer: pick ? `${LETTERS[selectedIndex] ?? selectedIndex + 1}. ${pick}` : `选项 ${selectedIndex + 1}`,
+        correct,
+        verdict: correct ? 'correct' : 'incorrect',
+        sourceLabels: key.sourceLabels ?? [],
+        knowledge: key.explanation ?? '',
+      });
+    }
+
+    return NextResponse.json({
+      correct,
+      correctIndex: key.correctIndex,
+      explanation: key.explanation ?? '',
+    });
+  } catch (err) {
+    return toErrorResponse(err);
+  }
+}

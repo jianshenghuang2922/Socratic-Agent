@@ -1,0 +1,132 @@
+/**
+ * 服务端配置解析。
+ * 所有密钥只从 .env 读取，代码里不出现任何字面量。
+ */
+
+function int(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export interface LlmConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  /** 主模型失败（限流 / 5xx / 空输出）时依次降级的备用模型 */
+  fallbackModels: string[];
+  /** 单个模型的尝试次数（含首次） */
+  maxRetries: number;
+}
+
+/**
+ * 备用模型链的默认值。
+ * 上游（尤其 OpenRouter 的免费/低价 provider）经常返回 429，
+ * 换一个 provider 就能通 —— 单次 429 不该让整道题失败。
+ * 用 LLM_FALLBACK_MODELS 覆盖（逗号分隔，留空则关闭降级）。
+ */
+const DEFAULT_FALLBACK_MODELS = 'deepseek/deepseek-chat-v3.1,qwen/qwen3-max,z-ai/glm-4.6';
+
+function parseList(value: string | undefined, fallback: string): string[] {
+  const raw = value === undefined ? fallback : value;
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export function llmConfig(): LlmConfig {
+  // OPENAI_* 优先（OpenAI 兼容网关），回落到 CodeBuddy Agent SDK 的凭据
+  const apiKey =
+    process.env.OPENAI_API_KEY?.trim() ||
+    process.env.CODEBUDDY_API_KEY?.trim() ||
+    process.env.CODEBUDDY_AUTH_TOKEN?.trim() ||
+    '';
+
+  const baseUrl = (
+    process.env.OPENAI_BASE_URL?.trim() ||
+    process.env.CODEBUDDY_BASE_URL?.trim() ||
+    'https://api.openai.com/v1'
+  ).replace(/\/+$/, '');
+
+  const model = process.env.LLM_MODEL?.trim() || 'gpt-4o-mini';
+
+  const fallbackModels = parseList(process.env.LLM_FALLBACK_MODELS, DEFAULT_FALLBACK_MODELS).filter(
+    (m) => m !== model,
+  );
+
+  const maxRetries = int('LLM_MAX_RETRIES', 3);
+
+  return { apiKey, baseUrl, model, fallbackModels, maxRetries };
+}
+
+export const limits = {
+  /** 单个文件超过这个大小就跳过 */
+  maxFileSizeBytes: int('MAX_FILE_SIZE_MB', 5) * 1024 * 1024,
+  /** 仓库最多遍历多少个文件 */
+  maxFiles: int('MAX_FILES', 50000),
+  /** 单次分析（克隆 + 遍历）的总超时 */
+  analysisTimeoutMs: int('ANALYSIS_TIMEOUT_SECONDS', 900) * 1000,
+  /**
+   * git clone 的超时。
+   * 原本由 .env 的 CLONE_TIMEOUT_SECONDS 控制，按用户要求已从 .env.example 移除，
+   * 因此改为代码内常量。
+   */
+  cloneTimeoutMs: 180_000,
+  /** 抓取网页的超时 */
+  fetchTimeoutMs: 20_000,
+  /**
+   * 建索引时最多读入多少字符。
+   * 有了检索就不必再把整个项目塞进 prompt —— 全量索引、按需召回。
+   * 这个上限只是兜住内存，正常仓库远够用。
+   */
+  indexBudgetChars: int('INDEX_BUDGET_CHARS', 600_000),
+  /** 单个文件送入索引的上限（超长文件按声明边界切块，不会整体丢弃） */
+  maxCharsPerFile: int('MAX_CHARS_PER_FILE_CHARS', 20_000),
+  /** 出题时召回的资料预算（字符） */
+  contextBudgetChars: int('CONTEXT_BUDGET_CHARS', 16_000),
+  /** 回答问题时召回的资料预算（字符），比出题小 */
+  answerBudgetChars: int('ANSWER_BUDGET_CHARS', 6_000),
+  /** 单次检索最多返回多少块 */
+  maxChunks: int('MAX_CHUNKS', 12),
+  /**
+   * 是否启用 LLM 查询扩展。
+   * 中文提问与英文代码之间没有字面重叠，靠它才能召回（实测 Top-1 从 1/10 提到 6/10）。
+   * 代价是每次中文检索多一次 LLM 调用 —— 额度紧张时可以设 RAG_EXPAND_QUERY=0 关掉。
+   */
+  ragExpandQuery: process.env.RAG_EXPAND_QUERY !== '0',
+};
+
+/**
+ * 稠密向量检索的可选配置。
+ * 当前环境（OpenRouter 403 / CodeBuddy 404）拿不到 embeddings 接口，
+ * 因此默认关闭，纯走 BM25；填了这三项就自动启用并与 BM25 做 RRF 融合。
+ */
+export interface EmbeddingConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+export function embeddingConfig(): EmbeddingConfig | null {
+  const baseUrl = (
+    process.env.EMBEDDING_BASE_URL?.trim() ||
+    process.env.OPENAI_EMBEDDING_BASE_URL?.trim() ||
+    ''
+  ).replace(/\/+$/, '');
+  const apiKey =
+    process.env.EMBEDDING_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || '';
+  const model = process.env.EMBEDDING_MODEL?.trim() || '';
+
+  // 三项齐备才启用 —— 少任何一项都说明用户没打算用稠密检索
+  if (!baseUrl || !apiKey || !model) return null;
+  return { baseUrl, apiKey, model };
+}
+
+export function assertLlmConfigured(): void {
+  const { apiKey } = llmConfig();
+  if (!apiKey) {
+    throw new Error(
+      '未配置 LLM 凭据：请在 .env 中填写 OPENAI_API_KEY（OpenAI 兼容网关）或 CODEBUDDY_API_KEY',
+    );
+  }
+}
