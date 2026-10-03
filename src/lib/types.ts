@@ -65,6 +65,8 @@ export interface ChoiceQuestion {
   /** 提交后由 Agent 返回 */
   correctIndex?: number;
   explanation?: string;
+  /** 出题时依据的资料块标签（RAG 溯源） */
+  sources?: string[];
 }
 
 /** 简答题的结构化数据 */
@@ -83,6 +85,8 @@ export interface ShortQuestion {
   feedback?: string;
   /** 参考答案 */
   reference?: string;
+  /** 出题时依据的资料块标签（RAG 溯源） */
+  sources?: string[];
 }
 
 export type Question = ChoiceQuestion | ShortQuestion;
@@ -97,6 +101,8 @@ interface MessageBase {
 export interface TextMessage extends MessageBase {
   kind: 'text';
   content: string;
+  /** 这条回答依据的资料块标签（仅提问模式的 Agent 回答有） */
+  sources?: string[];
 }
 
 /** 承载一道题目的消息（含作答结果） */
@@ -131,6 +137,16 @@ export interface ShortGrade {
   reference: string;
 }
 
+/** 提问模式的回答结果 */
+export interface AskResult {
+  /** 回答正文 */
+  answer: string;
+  /** 本次回答依据了哪些资料块（RAG 溯源），前端用于展示「依据」 */
+  sources?: string[];
+  /** 中文提问被映射到哪些项目标识符（排查检索效果用） */
+  expanded?: string[];
+}
+
 /**
  * Agent 客户端接口。
  * 前端只依赖这个接口：V1.0 前端联调用 MockAgentClient 实现，
@@ -140,8 +156,15 @@ export interface AgentClient {
   /** 解析 URL、建立问答上下文 */
   initContext(url: string): Promise<UrlContext>;
 
-  /** 提问模式：根据 URL 内容回答用户问题 */
-  ask(question: string, history: ChatMessage[]): Promise<string>;
+  /**
+   * 提问模式：根据 URL 内容回答用户问题。
+   * `onDelta` 可选 —— 传入时后端会走 SSE 逐段回传，前端可以边收边渲染。
+   */
+  ask(
+    question: string,
+    history: ChatMessage[],
+    onDelta?: (delta: string) => void,
+  ): Promise<AskResult>;
 
   /** 回答模式：主动生成下一道选择题 */
   nextChoiceQuestion(history: ChatMessage[]): Promise<ChoiceQuestion>;

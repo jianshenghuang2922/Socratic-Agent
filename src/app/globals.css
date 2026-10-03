@@ -800,6 +800,91 @@ textarea {
   border-color: rgba(255, 255, 255, 0.2);
 }
 
+/* ============================================================
+   引用来源（RAG 溯源）
+   ============================================================ */
+
+.sources {
+  margin: 7px 0 14px;
+  padding: 8px 11px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--stroke);
+}
+
+/* 挂在气泡下方时不需要额外底距（bubble-group 自身有 gap） */
+.bubble-group > .sources {
+  margin-bottom: 0;
+}
+
+.sources-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sources-head svg {
+  flex: none;
+  color: var(--accent-2);
+}
+
+.sources-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 8px;
+  background: rgba(91, 140, 255, 0.1);
+  border: 1px solid var(--accent-line);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #cddcff;
+  overflow: hidden;
+}
+
+.source-chip__path {
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-chip__anchor {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.source-more {
+  border: 1px dashed var(--stroke-2);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 8px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+
+.source-more:hover {
+  border-color: var(--accent-line);
+  color: #cddcff;
+  background: var(--accent-soft);
+}
+
 /* 系统提示 */
 .notice {
   align-self: center;
@@ -1442,6 +1527,91 @@ textarea {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ============================================================
+   错误页 / 路由加载态
+   ============================================================ */
+
+.error-page {
+  position: relative;
+  z-index: 10;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.error-card {
+  width: 100%;
+  max-width: 460px;
+  padding: 30px 28px 26px;
+  text-align: center;
+  background: var(--glass-2);
+  border: 1px solid var(--stroke-2);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(30px) saturate(170%);
+  -webkit-backdrop-filter: blur(30px) saturate(170%);
+  animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.error-icon {
+  font-size: 30px;
+  line-height: 1;
+  margin-bottom: 14px;
+}
+
+.error-title {
+  margin: 0 0 10px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #f2f6ff;
+}
+
+.error-desc {
+  margin: 0 0 18px;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+
+.error-detail {
+  margin-bottom: 18px;
+  padding: 10px 13px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  background: rgba(6, 10, 22, 0.55);
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.error-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.app-loading {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  padding: 24px;
+}
+
+.app-loading__text {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
 
 /* ============================================================

@@ -237,6 +237,9 @@ export interface RetrieveResult {
   hits: ScoredDoc[];
 }
 
+/** 块与块之间的分隔符 —— 预算计算要和它保持一致 */
+const BLOCK_SEPARATOR = '\n\n---\n\n';
+
 /**
  * 按预算把召回结果拼成上下文。
  * 每块前面统一加来源标记，模型据此引用具体文件/章节。
@@ -257,10 +260,11 @@ export function assembleContext(items: { label: string; text: string }[], budget
       break;
     }
     parts.push(piece);
-    used += piece.length + 2;
+    // 加上即将插入的分隔符长度，否则预算会被分隔符悄悄撑爆
+    used += piece.length + BLOCK_SEPARATOR.length;
   }
 
-  return parts.join('\n\n---\n\n');
+  return parts.join(BLOCK_SEPARATOR);
 }
 
 /** 召回 + 拼装，最常用的组合 */

@@ -38,6 +38,8 @@ interface AttemptResult {
   retryable: boolean;
   detail: string;
   content?: string;
+  /** 流式专用：是否已经往客户端吐过字。吐过就不能重试/换模型，否则内容会重复 */
+  emitted?: boolean;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -76,7 +78,14 @@ async function attemptOnce(
     return { ok: false, status: 0, retryable: true, detail: describeNetworkError(err, '调用大模型') };
   }
 
-  const raw = await response.text();
+  // 读 body 同样可能被 AbortSignal 打断，必须一起兜住，
+  // 否则超时会在这一行抛成非 ApiError，路由只能回 500「服务端异常」
+  let raw: string;
+  try {
+    raw = await response.text();
+  } catch (err) {
+    return { ok: false, status: 0, retryable: true, detail: describeNetworkError(err, '调用大模型') };
+  }
 
   if (!response.ok) {
     let detail = raw.slice(0, 400);
@@ -199,4 +208,220 @@ export function extractJson<T>(raw: string, what = '结构化结果'): T {
   }
 }
 
-export { limits };
+/* ------------------------------------------------------------------ */
+/* 流式输出                                                            */
+/* ------------------------------------------------------------------ */
+
+interface StreamAttemptResult extends AttemptResult {
+  /** 已吐给客户端的正文累计值 */
+  content: string;
+}
+
+/**
+ * 单次流式调用。不抛异常，把结果压成 StreamAttemptResult。
+ *
+ * 关键约束：一旦通过 onDelta 吐过字，就不能再重试或换模型 ——
+ * 用户已经看到前半段，重来一遍会把内容接成「前半段 + 完整版」。
+ * 所以 `emitted` 会被上层用来判断「能不能重来」。
+ */
+async function streamOnce(
+  model: string,
+  messages: ChatMessage[],
+  opts: {
+    apiKey: string;
+    baseUrl: string;
+    temperature: number;
+    maxTokens: number;
+    timeoutMs: number;
+  },
+  onDelta: (delta: string) => void,
+): Promise<StreamAttemptResult> {
+  const { apiKey, baseUrl, temperature, maxTokens, timeoutMs } = opts;
+
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: true,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      retryable: true,
+      detail: describeNetworkError(err, '调用大模型'),
+      content: '',
+      emitted: false,
+    };
+  }
+
+  if (!response.ok) {
+    let raw = '';
+    try {
+      raw = await response.text();
+    } catch {
+      /* 错误响应体读不出来就算了，用状态码兜底 */
+    }
+    let detail = raw.slice(0, 400);
+    try {
+      const parsed = JSON.parse(raw) as ChatCompletionResponse;
+      detail = parsed.error?.message ?? detail;
+    } catch {
+      /* 上游不一定返回 JSON */
+    }
+    const retryable = response.status === 429 || response.status >= 500;
+    return { ok: false, status: response.status, retryable, detail, content: '', emitted: false };
+  }
+
+  if (!response.body) {
+    return {
+      ok: false,
+      status: response.status,
+      retryable: true,
+      detail: '网关没有返回流式响应体',
+      content: '',
+      emitted: false,
+    };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let emitted = false;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE：一行一个字段，事件之间以空行分隔。逐行取 `data:` 载荷。
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).replace(/\r$/, '');
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+
+        let chunk: ChatCompletionResponse & {
+          choices?: Array<{ delta?: { content?: string | null } }>;
+        };
+        try {
+          chunk = JSON.parse(payload) as typeof chunk;
+        } catch {
+          continue; // 半行 JSON，等下一片
+        }
+
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string' && delta) {
+          content += delta;
+          emitted = true;
+          onDelta(delta);
+        }
+      }
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      retryable: !emitted,
+      detail: describeNetworkError(err, '读取模型输出流'),
+      content,
+      emitted,
+    };
+  }
+
+  if (content.trim()) {
+    return { ok: true, status: 200, retryable: false, detail: '', content: content.trim(), emitted: true };
+  }
+  return { ok: false, status: 200, retryable: true, detail: '模型流式返回了空内容', content: '', emitted };
+}
+
+/**
+ * 流式调用，逐段把正文交给 `onDelta`，返回完整正文。
+ *
+ * 健壮性策略与非流式一致（单模型内重试 + 备用模型链降级），
+ * 但多一条硬约束：**已经开始吐字就不许重来**。
+ * 上游在流中途断掉时，与其把重复内容接在用户眼前，不如直接报错让用户重试。
+ */
+export async function chatStream(
+  messages: ChatMessage[],
+  onDelta: (delta: string) => void,
+  options: ChatOptions = {},
+): Promise<string> {
+  const cfg = llmConfig();
+  if (!cfg.apiKey) {
+    throw new ApiError(
+      500,
+      '未配置 LLM 凭据：请在 .env 中填写 OPENAI_API_KEY 或 CODEBUDDY_API_KEY',
+    );
+  }
+
+  const { temperature = 0.3, maxTokens = 3000, timeoutMs = 90_000 } = options;
+  const models = [cfg.model, ...cfg.fallbackModels];
+  const failures: string[] = [];
+
+  for (let mi = 0; mi < models.length; mi++) {
+    const model = models[mi];
+    let last: StreamAttemptResult = {
+      ok: false,
+      status: 0,
+      retryable: false,
+      detail: '未执行',
+      content: '',
+      emitted: false,
+    };
+
+    for (let attempt = 1; attempt <= cfg.maxRetries; attempt++) {
+      const result = await streamOnce(
+        model,
+        messages,
+        { apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, temperature, maxTokens, timeoutMs },
+        onDelta,
+      );
+
+      if (result.ok && result.content) {
+        if (mi > 0) console.warn(`[llm] 已降级到备用模型 ${model} 并成功（流式）`);
+        return result.content;
+      }
+
+      last = result;
+
+      // 已经吐过字：重试或换模型都会造成内容重复，只能认输
+      if (result.emitted) {
+        throw new ApiError(502, `模型输出中断（${result.detail}），请重试`);
+      }
+
+      if (!result.retryable) break;
+
+      if (attempt < cfg.maxRetries) {
+        const wait = Math.min(8000, 600 * 2 ** (attempt - 1)) + Math.round(Math.random() * 300);
+        console.warn(
+          `[llm] ${model} 流式第 ${attempt} 次失败（${result.status || '网络'}）：${result.detail}；${wait}ms 后重试`,
+        );
+        await sleep(wait);
+      }
+    }
+
+    failures.push(`${model} → ${last.status || '网络'} ${last.detail}`);
+    if (mi < models.length - 1) {
+      console.warn(`[llm] ${model} 不可用，降级到 ${models[mi + 1]}`);
+    }
+  }
+
+  throw new ApiError(502, `所有模型均调用失败：\n${failures.join('\n')}`);
+}

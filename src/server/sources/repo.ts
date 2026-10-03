@@ -25,8 +25,18 @@ const SKIP_EXT = new Set([
   '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar', '.jar', '.war', '.class', '.exe', '.dll',
   '.so', '.dylib', '.bin', '.o', '.a', '.lib', '.pdb', '.wasm',
   '.ttf', '.otf', '.woff', '.woff2', '.eot', '.pdf', '.doc', '.docx', '.xls', '.xlsx',
-  '.ppt', '.pptx', '.lock', '.map', '.min.js', '.min.css', '.snap', '.ipynb',
+  '.ppt', '.pptx', '.lock', '.map', '.snap', '.ipynb',
 ]);
+
+/**
+ * 压缩产物。
+ * 不能用 `path.extname` 判断 —— `foo.min.js` 的扩展名是 `.js`，
+ * 所以「.min.js」这类条目写在 SKIP_EXT 里永远不会命中，压缩文件照样进索引。
+ */
+const MINIFIED_RE = /\.min\.(js|css)$/i;
+
+/** 目录树最大递归深度，防止畸形仓库把调用栈打爆 */
+const MAX_WALK_DEPTH = 40;
 
 const SKIP_FILES = new Set([
   'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock', 'Gemfile.lock',
@@ -93,8 +103,10 @@ async function walk(
   dir: string,
   out: string[],
   counter: { files: number },
+  depth = 0,
 ): Promise<void> {
   if (counter.files >= limits.maxFiles) return;
+  if (depth > MAX_WALK_DEPTH) return;
 
   let entries;
   try {
@@ -103,20 +115,24 @@ async function walk(
     return;
   }
 
+  // 目录顺序在不同机器上不一致，会让同一仓库的索引内容漂移；
+  // 排序后结果稳定，也便于复现检索问题
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+
   for (const entry of entries) {
     if (counter.files >= limits.maxFiles) return;
     const full = path.join(dir, entry.name);
 
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      await walk(root, full, out, counter);
+      await walk(root, full, out, counter, depth + 1);
       continue;
     }
     if (!entry.isFile()) continue;
 
     counter.files += 1;
     const ext = path.extname(entry.name).toLowerCase();
-    if (SKIP_EXT.has(ext)) continue;
+    if (SKIP_EXT.has(ext) || MINIFIED_RE.test(entry.name)) continue;
     if (SKIP_FILES.has(entry.name)) continue;
 
     const rel = path.relative(root, full).split(path.sep).join('/');
@@ -288,7 +304,17 @@ export async function loadRepo(rawUrl: string): Promise<LoadedSource> {
     const topLevel = await fs.readdir(workDir).catch(() => [] as string[]);
     const overview = topLevel.filter((n) => !SKIP_DIRS.has(n)).sort().join('  ');
 
-    // 仓库清单单独作为一块：问「项目有哪些模块」时能命中
+    /**
+     * 仓库清单单独作为一块：问「项目有哪些模块」时能命中。
+     *
+     * 但必须截断 —— 大仓库的文件列表可以到几万行，那会变成索引里最大的一块，
+     * 而且形态上就是「目录页」，是检索污染的头号来源（正是 isLowValueBlock 要拦的东西）。
+     * 只留前 N 条，足够回答「有哪些模块」，又不至于霸榜。
+     */
+    const MAX_MANIFEST_FILES = 400;
+    const listed = fileList.slice(0, MAX_MANIFEST_FILES);
+    const omitted = fileList.length - listed.length;
+
     const manifest: SourceBlock = {
       label: '仓库清单',
       path: ['仓库清单'],
@@ -301,8 +327,11 @@ export async function loadRepo(rawUrl: string): Promise<LoadedSource> {
         `索引块数：${blocks.length}${dropped > 0 ? `（另有 ${dropped} 个导航/名单类低价值块已过滤）` : ''}`,
         '',
         '## 文件列表',
-        fileList.join('\n'),
-      ].join('\n'),
+        listed.join('\n'),
+        omitted > 0 ? `…（另有 ${omitted} 个文件未列出）` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
     };
 
     const allBlocks = [manifest, ...blocks];

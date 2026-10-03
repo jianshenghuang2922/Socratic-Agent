@@ -54,3 +54,23 @@ export function describeNetworkError(err: unknown, what: string): string {
   if (/ECONNREFUSED|ECONNRESET/i.test(message)) return `${what}失败：连接被拒绝或中断`;
   return `${what}失败：${message}`;
 }
+
+/**
+ * 流式场景下的错误归一化。
+ *
+ * 与 `toErrorResponse` 的区别：那里要决定 HTTP 状态码，这里只要一句人话。
+ * SSE 一旦开始吐字，响应头就发出去了，改不了状态码，所以错误统一走 `error` 事件，
+ * 前端只需要一个稳定的中文文案。
+ */
+export function describeUpstream(err: unknown): string {
+  // 业务异常（模型全部失败、模型输出不合规等）本身就是给人看的
+  if (err instanceof ApiError) return err.message;
+
+  const message = err instanceof Error ? err.message : String(err);
+  if (/abort|timeout/i.test(message)) return '上游响应超时，请重试';
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(message)) return '无法连接模型网关，请检查网络或网关地址';
+  if (/ECONNREFUSED|ECONNRESET/i.test(message)) return '与模型网关的连接被中断，请重试';
+
+  console.error('[agent stream] 未预期的错误:', err);
+  return `服务端异常：${message}`;
+}

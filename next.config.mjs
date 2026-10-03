@@ -1,11 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // 云上部署时平台只给一个 PORT，且要求监听 0.0.0.0；
-  // 在配置里读环境变量比在 startCmd 里写 $PORT 稳妥（部分环境不展开 shell 变量）。
-  ...(process.env.PORT
-    ? { port: Number(process.env.PORT), hostname: '0.0.0.0' }
-    : {}),
+  // 端口与监听地址交给 `next start` 自己处理：
+  // 它内置 `-p, --port`（默认 3000，且会读 PORT 环境变量）与 `-H, --hostname`（默认 0.0.0.0）。
+  // 注意：`port` / `hostname` **不是** next.config 的合法键，写在这里会被忽略并告警
+  // （Unrecognized key(s) in object），所以不要往这里加。
 };
 
 export default nextConfig;

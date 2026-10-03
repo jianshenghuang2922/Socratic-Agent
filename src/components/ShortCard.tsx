@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { SourceList } from './SourceList';
 import type { ShortQuestion } from '@/lib/types';
 
 interface Props {
@@ -33,6 +34,8 @@ export function ShortCard({ question, disabled, onSubmit }: Props) {
     <div className={`card ${abandoned ? 'card--abandoned' : ''}`}>
       <div className="card-tag card-tag--short">简答题</div>
       <p className="card-prompt">{question.prompt}</p>
+
+      <SourceList sources={question.sources} visible={2} />
 
       {abandoned && <div className="card-abandoned">此题已作废（题型已切换）</div>}
 

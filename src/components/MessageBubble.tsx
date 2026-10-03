@@ -1,4 +1,5 @@
 import { RichText } from './RichText';
+import { SourceList } from './SourceList';
 import type { ChatMessage } from '@/lib/types';
 
 const ROLE_LABEL: Record<ChatMessage['role'], string> = {
@@ -20,6 +21,8 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         <div className={`bubble ${isUser ? 'bubble--user' : 'bubble--agent'}`}>
           <RichText text={message.content} />
         </div>
+        {/* RAG 溯源：让用户能判断这回答是有据可查还是模型在编 */}
+        {!isUser && <SourceList sources={message.sources} />}
       </div>
     </div>
   );

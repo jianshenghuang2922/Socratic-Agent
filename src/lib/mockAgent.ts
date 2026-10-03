@@ -1,5 +1,6 @@
 import type {
   AgentClient,
+  AskResult,
   ChatMessage,
   ChoiceGrade,
   ChoiceQuestion,
@@ -164,18 +165,33 @@ export class MockAgentClient implements AgentClient {
     };
   }
 
-  async ask(question: string, _history: ChatMessage[]): Promise<string> {
+  async ask(
+    question: string,
+    _history: ChatMessage[],
+    onDelta?: (delta: string) => void,
+  ): Promise<AskResult> {
     void _history;
     await sleep(900);
     const kb = this.lastWasRepo ? REPO_KNOWLEDGE : WEB_KNOWLEDGE;
     const fact = kb.facts[Math.floor(Math.random() * kb.facts.length)];
-    return [
+    const answer = [
       `针对「${question}」的回答如下：`,
       '',
       fact,
       '',
       `（当前为前端联调的模拟回答。接入真实 Agent 后，此处会由大模型基于召回的内容片段生成。）`,
     ].join('\n');
+
+    // 模拟流式：按小块吐字，让前端的增量渲染逻辑在 mock 下也能跑通
+    if (onDelta) {
+      const step = 6;
+      for (let i = 0; i < answer.length; i += step) {
+        await sleep(28);
+        onDelta(answer.slice(i, i + step));
+      }
+    }
+
+    return { answer, sources: kb.facts.map((_, i) => `${kb.topic} › 段落 ${i + 1}`).slice(0, 3) };
   }
 
   async nextChoiceQuestion(_history: ChatMessage[]): Promise<ChoiceQuestion> {

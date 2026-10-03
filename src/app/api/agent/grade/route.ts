@@ -96,6 +96,11 @@ export async function POST(req: Request) {
     if (!Number.isInteger(selectedIndex)) {
       throw new ApiError(400, '缺少必填字段：selectedIndex');
     }
+    // 越界的下标不报错的话，只会静默判成「错」，还会把记录写歪
+    const optionCount = key.options?.length ?? 0;
+    if (selectedIndex < 0 || (optionCount > 0 && selectedIndex >= optionCount)) {
+      throw new ApiError(400, `selectedIndex 超出选项范围（0 ~ ${optionCount - 1}）`);
+    }
 
     const correct = selectedIndex === key.correctIndex;
 

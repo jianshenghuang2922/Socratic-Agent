@@ -140,12 +140,50 @@ export function useQASession() {
       const question = text.trim();
       if (!question || busy || phase !== 'ready') return;
       const history = messages;
+      const answerId = uid('agent');
+      /** 是否已经开始渲染正文（决定最后是「追加」还是「新建」气泡） */
+      let started = false;
+
       push({ id: uid('user'), role: 'user', kind: 'text', content: question, ts: Date.now() });
       setBusy(true);
       setStatus({ kind: 'thinking', text: 'Agent 正在思考…' });
+
+      // 边收边渲染：第一段增量到达时才创建气泡，之前保持「思考中」占位
+      const onDelta = (delta: string) => {
+        if (!started) {
+          started = true;
+          push({ id: answerId, role: 'agent', kind: 'text', content: delta, ts: Date.now() });
+          setStatus({ kind: 'thinking', text: '正在作答…' });
+          return;
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === answerId && m.kind === 'text' ? { ...m, content: m.content + delta } : m,
+          ),
+        );
+      };
+
       try {
-        const answer = await agent.ask(question, history);
-        push({ id: uid('agent'), role: 'agent', kind: 'text', content: answer, ts: Date.now() });
+        const result = await agent.ask(question, history, onDelta);
+        if (started) {
+          // 流式已渲染：用最终结果校正内容，并补上来源标签
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === answerId && m.kind === 'text'
+                ? { ...m, content: result.answer, sources: result.sources }
+                : m,
+            ),
+          );
+        } else {
+          push({
+            id: answerId,
+            role: 'agent',
+            kind: 'text',
+            content: result.answer,
+            sources: result.sources,
+            ts: Date.now(),
+          });
+        }
         setStatus({ kind: 'success', text: '回答完成' });
       } catch (err) {
         fail(err);

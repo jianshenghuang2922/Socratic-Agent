@@ -63,6 +63,12 @@ export interface StoredContext {
   /** 结构化块 —— 检索的数据源 */
   blocks: SourceBlock[];
   createdAt: number;
+  /**
+   * 最近一次被访问的时间。
+   * 回收只看 createdAt 的话，一个持续用了两小时的会话会被判过期中途消失；
+   * 这里按「闲置时长」回收，活跃会话不会被打断。
+   */
+  lastActiveAt: number;
   /** 题目 id -> 答案键。只存在服务端，不下发给前端 */
   answers: Map<string, AnswerKey>;
   /** 用户作答历史 */
@@ -100,11 +106,11 @@ const store: Store = (globalThis.__socraticStore ??= { contexts: new Map() });
 function sweep(): void {
   const now = Date.now();
   for (const [id, ctx] of store.contexts) {
-    if (now - ctx.createdAt > TTL_MS) store.contexts.delete(id);
+    if (now - ctx.lastActiveAt > TTL_MS) store.contexts.delete(id);
   }
-  // 仍然超量时，按创建时间淘汰最旧的
+  // 仍然超量时，淘汰最久没被访问的
   if (store.contexts.size > MAX_CONTEXTS) {
-    const ordered = [...store.contexts.values()].sort((a, b) => a.createdAt - b.createdAt);
+    const ordered = [...store.contexts.values()].sort((a, b) => a.lastActiveAt - b.lastActiveAt);
     for (const ctx of ordered.slice(0, store.contexts.size - MAX_CONTEXTS)) {
       store.contexts.delete(ctx.id);
     }
@@ -114,14 +120,23 @@ function sweep(): void {
 export function createContext(
   data: Omit<
     StoredContext,
-    'id' | 'createdAt' | 'answers' | 'interactions' | 'userQueries' | 'index' | 'expansions'
+    | 'id'
+    | 'createdAt'
+    | 'lastActiveAt'
+    | 'answers'
+    | 'interactions'
+    | 'userQueries'
+    | 'index'
+    | 'expansions'
   >,
 ): StoredContext {
   sweep();
+  const now = Date.now();
   const ctx: StoredContext = {
     ...data,
     id: randomUUID(),
-    createdAt: Date.now(),
+    createdAt: now,
+    lastActiveAt: now,
     answers: new Map(),
     interactions: [],
     userQueries: [],
@@ -133,7 +148,10 @@ export function createContext(
 export function getContext(id: string | undefined): StoredContext | undefined {
   if (!id) return undefined;
   sweep();
-  return store.contexts.get(id);
+  const ctx = store.contexts.get(id);
+  // 续期：只要还在用，就不该被回收
+  if (ctx) ctx.lastActiveAt = Date.now();
+  return ctx;
 }
 
 /** 取上下文，取不到就抛 410 —— 前端会提示用户重新输入 URL */
