@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "基于 URL 内容的智能问答 Agent —— 前端",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",

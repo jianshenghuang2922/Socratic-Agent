@@ -10,8 +10,13 @@
 import { spawn } from 'node:child_process';
 
 const port = process.env.PORT || '3000';
-// 云平台通常要求监听 0.0.0.0 才能被反向代理访问；本地默认同样是 0.0.0.0 也无副作用
-const host = process.env.HOSTNAME_BIND || process.env.HOST || '0.0.0.0';
+// 云平台（Zeabur / Railway / Render 等）要求监听 0.0.0.0 才能被反向代理访问；
+// 本地默认 0.0.0.0 同样无副作用。
+//
+// 只认自定义的 HOSTNAME_BIND，**不要读 process.env.HOST**：
+// 容器里 HOST 常被平台设成别的东西（主机名、外部域名等），
+// 拿来当监听地址会直接绑不上、启动失败。
+const host = process.env.HOSTNAME_BIND || '0.0.0.0';
 
 console.log(`[start] next start -H ${host} -p ${port}`);
 
