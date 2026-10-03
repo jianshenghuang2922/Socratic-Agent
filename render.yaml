@@ -1,0 +1,49 @@
+# Render Blueprint —— 一键创建免费 Web 服务
+#
+# 用法：Render 控制台 → New → Blueprint → 选本仓库，Render 会读取本文件自动建服务。
+# 之后每次 push 到 master 自动重新部署。
+#
+# ⚠️ 免费层的限制（务必知情）：
+#   - 512MB 内存、无 swap。运行内存吃紧，大仓库分析可能 OOM。
+#   - 15 分钟无流量会休眠，下次访问需冷启动（约 30-60 秒）。
+#   - 没有 shell 访问，排障只能看日志。
+#   若构建阶段 OOM，把 buildCommand 换成带堆上限的版本：
+#     NODE_OPTIONS=--max-old-space-size=1536 npm run build
+
+services:
+  - type: web
+    name: socratic-agent
+    runtime: node
+    plan: free
+    # 新加坡节点离国内最近；若创建时报区域不支持，删掉这一行让 Render 自选
+    region: singapore
+    branch: master
+    # push 到 master 即自动重新部署（这是默认值，显式写出来避免歧义）
+    autoDeployTrigger: commit
+    # 用 npm install 而非 npm ci：后者要求 package-lock.json 与 package.json 严格一致，
+    # 改过 package.json 后容易直接报错中断构建。
+    buildCommand: npm install && npm run build
+    # 走 scripts/start.mjs —— 它从 PORT 读端口、绑 0.0.0.0，正是云平台需要的
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+
+      # 前端必须走真实后端（编译期内联，构建时就要有）
+      - key: NEXT_PUBLIC_AGENT_MODE
+        value: http
+
+      # ---- LLM 配置 ----
+      - key: LLM_MODEL
+        value: deepseek/deepseek-chat
+      - key: LLM_FALLBACK_MODELS
+        value: deepseek/deepseek-chat-v3.1,qwen/qwen3-max,z-ai/glm-4.6
+      - key: LLM_MAX_RETRIES
+        value: "3"
+
+      # ---- 密钥：sync: false 表示不在仓库里存值，由你在 Render 控制台填写 ----
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
