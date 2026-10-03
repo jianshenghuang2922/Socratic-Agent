@@ -43,6 +43,9 @@ services:
         value: "3"
 
       # ---- 密钥：sync: false 表示不在仓库里存值，由你在 Render 控制台填写 ----
+      # ⚠️ 这两项**可以留空**：应用支持「用户自带 API Key」（BYOK），
+      #    用户在页面右上角「模型设置」里填自己的 Key 即可正常提问与出题。
+      #    公开部署建议就留空 —— 挂一个共享付费 Key，很快会被刷爆。
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_BASE_URL

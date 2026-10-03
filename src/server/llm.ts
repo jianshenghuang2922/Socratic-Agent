@@ -1,4 +1,4 @@
-import { llmConfig, limits } from './config';
+import { llmConfig, limits, type LlmOverride } from './config';
 import { ApiError, describeNetworkError } from './http';
 
 export interface ChatMessage {
@@ -15,6 +15,8 @@ export interface ChatOptions {
    */
   maxTokens?: number;
   timeoutMs?: number;
+  /** 用户自带的凭据（BYOK）。不给就用服务端 .env 里的凭据 */
+  override?: LlmOverride;
 }
 
 interface ChatCompletionResponse {
@@ -43,6 +45,17 @@ interface AttemptResult {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 一条凭据都没有时的提示。
+ * 公网部署上这是最常见的失败，所以文案必须能直接指路，而不是只说「没配 Key」。
+ */
+function missingCredentialError(): ApiError {
+  return new ApiError(
+    500,
+    '本服务未配置模型凭据。请点击页面右上角「模型设置」，填入你自己的 API Key（支持 OpenRouter、DeepSeek 等任意 OpenAI 兼容网关）后即可使用。',
+  );
+}
 
 /** 单次调用。不抛异常，把结果压成 AttemptResult，由上层决定重试还是换模型。 */
 async function attemptOnce(
@@ -139,13 +152,8 @@ async function attemptOnce(
  * 上游 provider 的 429 是常态，不做这层的话一次抖动就会让整道题 502。
  */
 export async function chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
-  const cfg = llmConfig();
-  if (!cfg.apiKey) {
-    throw new ApiError(
-      500,
-      '未配置 LLM 凭据：请在 .env 中填写 OPENAI_API_KEY 或 CODEBUDDY_API_KEY',
-    );
-  }
+  const cfg = llmConfig(options.override);
+  if (!cfg.apiKey) throw missingCredentialError();
 
   const { temperature = 0.3, maxTokens = 3000, timeoutMs = 90_000 } = options;
   const models = [cfg.model, ...cfg.fallbackModels];
@@ -363,13 +371,8 @@ export async function chatStream(
   onDelta: (delta: string) => void,
   options: ChatOptions = {},
 ): Promise<string> {
-  const cfg = llmConfig();
-  if (!cfg.apiKey) {
-    throw new ApiError(
-      500,
-      '未配置 LLM 凭据：请在 .env 中填写 OPENAI_API_KEY 或 CODEBUDDY_API_KEY',
-    );
-  }
+  const cfg = llmConfig(options.override);
+  if (!cfg.apiKey) throw missingCredentialError();
 
   const { temperature = 0.3, maxTokens = 3000, timeoutMs = 90_000 } = options;
   const models = [cfg.model, ...cfg.fallbackModels];

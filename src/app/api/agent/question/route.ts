@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { readLlmOverride } from '@/server/byok';
 import { ApiError, readJson, toErrorResponse } from '@/server/http';
 import { chat, extractJson } from '@/server/llm';
 import { choiceQuestionMessages, shortQuestionMessages, summarizeHistory } from '@/server/prompts';
@@ -109,6 +110,7 @@ function parseShortDraft(raw: string) {
  */
 export async function POST(req: Request) {
   try {
+    const override = readLlmOverride(req);
     const body = await readJson<{ contextId?: string; mode?: string; history?: unknown }>(req);
     const ctx = requireContext(body.contextId);
 
@@ -121,7 +123,7 @@ export async function POST(req: Request) {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
       try {
         // 重试时换一批采样块，绕开刚出过题的那段资料
-        const bundle = await contextForQuestion(ctx, askedQuestions.length + attempt * 3);
+        const bundle = await contextForQuestion(ctx, askedQuestions.length + attempt * 3, override);
 
         const opts = {
           askedQuestions,
@@ -141,6 +143,7 @@ export async function POST(req: Request) {
         const raw = await chat(messages, {
           temperature: attempt === 0 ? 0.9 : 1.0,
           maxTokens: 2500,
+          override,
         });
 
         if (mode === 'choice') {

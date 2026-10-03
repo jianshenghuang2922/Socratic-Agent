@@ -1,4 +1,5 @@
 import { MockAgentClient } from './mockAgent';
+import { getLlmHeaders, getLlmSettings } from './llmSettings';
 import type {
   AgentClient,
   AskResult,
@@ -45,6 +46,14 @@ export class HttpAgentClient implements AgentClient {
 
   constructor(private readonly baseUrl = '') {}
 
+  /**
+   * 请求头：固定带 JSON，另外把用户自带的模型凭据（BYOK）一并带上。
+   * 每次请求现取 —— 用户刚在「模型设置」里改完，下一次提问就生效。
+   */
+  private headers(): Record<string, string> {
+    return { 'Content-Type': 'application/json', ...getLlmHeaders() };
+  }
+
   /** 把非 2xx 响应收敛成带中文提示的 Error（并处理 410 失效） */
   private async toError(res: Response): Promise<Error> {
     // 后端统一返回 { error: '中文提示' }，优先展示它，别把原始 JSON 甩给用户
@@ -63,7 +72,7 @@ export class HttpAgentClient implements AgentClient {
   private async post<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.headers(),
       body: JSON.stringify(body),
     });
 
@@ -118,7 +127,7 @@ export class HttpAgentClient implements AgentClient {
   ): Promise<AskResult> {
     const res = await fetch(`${this.baseUrl}/api/agent/ask/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.headers(),
       body: JSON.stringify(body),
     });
 
@@ -212,12 +221,44 @@ export class HttpAgentClient implements AgentClient {
   }
 }
 
-let cached: AgentClient | null = null;
+/* ------------------------------------------------------------------ */
+/* 实现选择                                                            */
+/* ------------------------------------------------------------------ */
 
-/** 获取全局唯一的 Agent 客户端实例 */
+export type AgentMode = 'mock' | 'http';
+
+/**
+ * 决定用哪个实现。
+ *
+ * 历史上这里默认 `mock`，而 `NEXT_PUBLIC_AGENT_MODE` 在客户端**未必被内联**
+ * （构建时该变量缺失就会退化成运行时 `process.env` 查询，浏览器里恒为 undefined）。
+ * 结果就是：服务端配好了 Key，线上却一直在跑前端联调模拟 —— 正是要修的这个坑。
+ *
+ * 现在的规则，按优先级：
+ *  1. 用户填了自己的 API Key ⇒ 必须走真实后端，否则他的 Key 根本没机会被用到；
+ *  2. 显式设了 `NEXT_PUBLIC_AGENT_MODE=mock` ⇒ 尊重它（本地联调用）；
+ *  3. 其余情况一律走真实后端 —— 默认值不再偏向「假装能用」的模拟。
+ */
+export function resolveAgentMode(): AgentMode {
+  if (getLlmSettings()) return 'http';
+
+  const flag = process.env.NEXT_PUBLIC_AGENT_MODE;
+  if (flag === 'mock') return 'mock';
+
+  return 'http';
+}
+
+let cached: { mode: AgentMode; client: AgentClient } | null = null;
+
+/** 获取当前模式下的 Agent 客户端实例（模式变了会自动换） */
 export function getAgentClient(): AgentClient {
-  if (cached) return cached;
-  const mode = process.env.NEXT_PUBLIC_AGENT_MODE ?? 'mock';
-  cached = mode === 'http' ? new HttpAgentClient() : new MockAgentClient();
-  return cached;
+  const mode = resolveAgentMode();
+  if (cached && cached.mode === mode) return cached.client;
+  cached = { mode, client: mode === 'http' ? new HttpAgentClient() : new MockAgentClient() };
+  return cached.client;
+}
+
+/** 丢弃缓存的客户端（测试与模式切换时用） */
+export function resetAgentClient(): void {
+  cached = null;
 }

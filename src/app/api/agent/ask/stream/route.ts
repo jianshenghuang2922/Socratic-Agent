@@ -1,8 +1,10 @@
+import { readLlmOverride } from '@/server/byok';
 import { describeUpstream, readJson, requireString, toErrorResponse } from '@/server/http';
 import { chatStream } from '@/server/llm';
 import { askMessages, summarizeHistory } from '@/server/prompts';
 import { contextForAsk, memoryDigest } from '@/server/rag';
 import { recordUserQuery, requireContext } from '@/server/store';
+import type { LlmOverride } from '@/server/config';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -27,9 +29,11 @@ export async function POST(req: Request) {
   let ctx: ReturnType<typeof requireContext>;
   let question: string;
   let history: unknown;
+  let override: LlmOverride | undefined;
 
   // 参数校验放在建立流之前 —— 这些错误还能用正常状态码返回
   try {
+    override = readLlmOverride(req);
     const body = await readJson<{ contextId?: string; question?: string; history?: unknown }>(req);
     question = requireString(body.question, 'question', 4000);
     ctx = requireContext(body.contextId);
@@ -60,14 +64,14 @@ export async function POST(req: Request) {
         // 让前端知道这段时间不是在干等
         send({ type: 'status', text: '正在检索资料…' });
 
-        const bundle = await contextForAsk(ctx, question, recentUserTurns);
+        const bundle = await contextForAsk(ctx, question, recentUserTurns, override);
 
         send({ type: 'sources', sources: bundle.sources });
 
         await chatStream(
           askMessages(ctx, question, bundle.text, recentTurns, memoryDigest(ctx)),
           (delta) => send({ type: 'delta', text: delta }),
-          { temperature: 0.3, maxTokens: 2500 },
+          { temperature: 0.3, maxTokens: 2500, override },
         );
 
         // 用户的问题本身也是「用户回复」，记下来并进索引

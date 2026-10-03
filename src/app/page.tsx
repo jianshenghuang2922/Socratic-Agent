@@ -1,16 +1,30 @@
 'use client';
 
+import { useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
 import { Composer } from '@/components/Composer';
 import { MessageList } from '@/components/MessageList';
+import { ModelSettings } from '@/components/ModelSettings';
 import { ModeTabs } from '@/components/ModeTabs';
 import { QuestionTypeTabs } from '@/components/QuestionTypeTabs';
 import { ScorePanel } from '@/components/ScorePanel';
 import { UrlGate } from '@/components/UrlGate';
+import { useLlmSettings, useServerLlmInfo } from '@/hooks/useLlmSettings';
 import { useQASession } from '@/hooks/useQASession';
 
 export default function Page() {
   const s = useQASession();
+  const llm = useLlmSettings();
+  const serverInfo = useServerLlmInfo();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const openSettings = () => setSettingsOpen(true);
+
+  /**
+   * 服务端没凭据 + 用户也没填 = 一定用不了。
+   * 与其等用户提完问题再报错，不如在入口就把话说明白。
+   */
+  const needsKey = serverInfo?.llmConfigured === false && !llm.settings;
 
   return (
     <div className="app">
@@ -18,6 +32,10 @@ export default function Page() {
         context={s.context}
         status={s.status}
         busy={s.busy}
+        agentMode={s.agentMode}
+        settings={llm.settings}
+        serverInfo={serverInfo}
+        onOpenSettings={openSettings}
         onReset={s.resetSession}
       />
 
@@ -26,6 +44,9 @@ export default function Page() {
           <UrlGate
             loading={false}
             error={s.status.kind === 'error' ? s.status.text : undefined}
+            agentMode={s.agentMode}
+            needsKey={needsKey}
+            onOpenSettings={openSettings}
             onSubmit={s.initSession}
           />
         </main>
@@ -87,6 +108,15 @@ export default function Page() {
           )}
         </>
       )}
+
+      <ModelSettings
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={llm.settings}
+        serverInfo={serverInfo}
+        onSave={llm.save}
+        onClear={llm.clear}
+      />
     </div>
   );
 }

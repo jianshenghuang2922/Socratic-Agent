@@ -19,6 +19,22 @@ export interface LlmConfig {
 }
 
 /**
+ * 请求级的凭据覆盖 —— 「用户自带 API Key」（BYOK）的落点。
+ *
+ * 用户在浏览器里填自己的网关地址 / Key / 模型，前端随每次请求用请求头发过来，
+ * 服务端只在这**一次请求**里用它调模型，不落盘、不进日志。
+ * 没带覆盖时，行为与从前完全一致（走 .env 里的服务端凭据）。
+ */
+export interface LlmOverride {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
+/** 服务端凭据缺省时的兜底网关 */
+const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+
+/**
  * 备用模型链的默认值。
  * 上游（尤其 OpenRouter 的免费/低价 provider）经常返回 429，
  * 换一个 provider 就能通 —— 单次 429 不该让整道题失败。
@@ -34,7 +50,27 @@ function parseList(value: string | undefined, fallback: string): string[] {
     .filter(Boolean);
 }
 
-export function llmConfig(): LlmConfig {
+export function llmConfig(override?: LlmOverride): LlmConfig {
+  const envModel = process.env.LLM_MODEL?.trim() || 'gpt-4o-mini';
+  const maxRetries = int('LLM_MAX_RETRIES', 3);
+
+  /*
+   * 用户自带 Key：只认他给的网关与模型。
+   *
+   * 关键取舍 —— 此时**不做跨网关降级**。
+   * 备用模型链是给服务端自己那套网关准备的；套到用户的 Key 上，只会把请求打到
+   * 对方根本不认识的模型上，白白拖长等待，最后仍然失败。宁可快速报错。
+   */
+  if (override?.apiKey) {
+    return {
+      apiKey: override.apiKey,
+      baseUrl: (override.baseUrl?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, ''),
+      model: override.model?.trim() || envModel,
+      fallbackModels: [],
+      maxRetries,
+    };
+  }
+
   // OPENAI_* 优先（OpenAI 兼容网关），回落到 CodeBuddy Agent SDK 的凭据
   const apiKey =
     process.env.OPENAI_API_KEY?.trim() ||
@@ -45,18 +81,19 @@ export function llmConfig(): LlmConfig {
   const baseUrl = (
     process.env.OPENAI_BASE_URL?.trim() ||
     process.env.CODEBUDDY_BASE_URL?.trim() ||
-    'https://api.openai.com/v1'
+    DEFAULT_BASE_URL
   ).replace(/\/+$/, '');
 
-  const model = process.env.LLM_MODEL?.trim() || 'gpt-4o-mini';
-
   const fallbackModels = parseList(process.env.LLM_FALLBACK_MODELS, DEFAULT_FALLBACK_MODELS).filter(
-    (m) => m !== model,
+    (m) => m !== envModel,
   );
 
-  const maxRetries = int('LLM_MAX_RETRIES', 3);
+  return { apiKey, baseUrl, model: envModel, fallbackModels, maxRetries };
+}
 
-  return { apiKey, baseUrl, model, fallbackModels, maxRetries };
+/** 服务端自己是否配了模型凭据（用于前端判断要不要引导用户自带 Key） */
+export function hasServerCredentials(): boolean {
+  return Boolean(llmConfig().apiKey);
 }
 
 export const limits = {
@@ -122,8 +159,8 @@ export function embeddingConfig(): EmbeddingConfig | null {
   return { baseUrl, apiKey, model };
 }
 
-export function assertLlmConfigured(): void {
-  const { apiKey } = llmConfig();
+export function assertLlmConfigured(override?: LlmOverride): void {
+  const { apiKey } = llmConfig(override);
   if (!apiKey) {
     throw new Error(
       '未配置 LLM 凭据：请在 .env 中填写 OPENAI_API_KEY（OpenAI 兼容网关）或 CODEBUDDY_API_KEY',

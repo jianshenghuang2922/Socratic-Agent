@@ -12,7 +12,7 @@
  * 只在提问含中文时触发（英文提问本来就能命中），结果按 query 缓存。
  */
 
-import { embeddingConfig, limits } from './config';
+import { embeddingConfig, limits, type LlmOverride } from './config';
 import { ApiError } from './http';
 import { chat, extractJson } from './llm';
 import type { StoredContext } from './store';
@@ -43,7 +43,11 @@ interface ExpandDraft {
  * 把查询扩展成「原查询 + 映射到的项目标识符」。
  * 失败一律降级为不扩展 —— 检索质量差一点，总好过整个请求挂掉。
  */
-export async function expandQuery(ctx: StoredContext, query: string): Promise<string[]> {
+export async function expandQuery(
+  ctx: StoredContext,
+  query: string,
+  override?: LlmOverride,
+): Promise<string[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
 
@@ -85,12 +89,15 @@ ${vocab.join(', ')}
 4. 只输出 JSON，不要代码围栏、不要解释：{"terms":["名称1","名称2"]}`;
 
   let terms: string[] = [];
+  // 调用失败（如当时还没配 Key）不写缓存 —— 否则用户补上 Key 之后，
+  // 同一个问题会一直命中那条「空结果」缓存，检索质量再也回不来。
+  let cacheable = true;
   try {
     const raw = await chat(
       [
         { role: 'user', content: prompt },
       ],
-      { temperature: 0.1, maxTokens: 2500 },
+      { temperature: 0.1, maxTokens: 2500, override },
     );
     const draft = extractJson<ExpandDraft>(raw, '查询扩展');
     if (Array.isArray(draft.terms)) {
@@ -107,8 +114,9 @@ ${vocab.join(', ')}
     if (!(err instanceof ApiError)) throw err;
     console.warn('[rag] 查询扩展失败，降级为纯 BM25：', err.message);
     terms = [];
+    cacheable = false;
   }
 
-  ctx.expansions.set(trimmed, terms);
+  if (cacheable) ctx.expansions.set(trimmed, terms);
   return terms;
 }

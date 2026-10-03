@@ -11,7 +11,7 @@
  * 这一层是需求里「项目内容和用户回复作为检索增强内容」的落点。
  */
 
-import { limits } from './config';
+import { limits, type LlmOverride } from './config';
 import { expandQuery } from './expand';
 import { assembleContext, pickWindow, searchWithExpansion } from './retrieve';
 import { getIndex, weakSpots, type Interaction, type StoredContext } from './store';
@@ -70,12 +70,13 @@ export async function contextForAsk(
   ctx: StoredContext,
   question: string,
   recentUserTurns: string[] = [],
+  override?: LlmOverride,
 ): Promise<RagBundle> {
   const index = getIndex(ctx);
   const raw = expandShortQuestion(question, recentUserTurns);
 
   // 中文提问先做一次标识符映射，否则召不回英文代码
-  const terms = await expandQuery(ctx, raw);
+  const terms = await expandQuery(ctx, raw, override);
   const hits = searchWithExpansion(index, raw, terms, limits.maxChunks);
 
   if (hits.length === 0) {
@@ -122,6 +123,7 @@ export interface QuestionContext {
 export async function contextForQuestion(
   ctx: StoredContext,
   round: number,
+  override?: LlmOverride,
 ): Promise<QuestionContext> {
   const index = getIndex(ctx);
   const focus = weakSpots(ctx, 3);
@@ -133,7 +135,7 @@ export async function contextForQuestion(
   if (focus.length > 0) {
     // 薄弱点题干同样是中文，一次性做扩展
     const focusText = focus.map((f) => `${f.prompt} ${f.knowledge}`).join(' ');
-    expanded = await expandQuery(ctx, focusText);
+    expanded = await expandQuery(ctx, focusText, override);
 
     for (const it of focus) {
       const hits = searchWithExpansion(index, `${it.prompt} ${it.knowledge}`, expanded, 2);

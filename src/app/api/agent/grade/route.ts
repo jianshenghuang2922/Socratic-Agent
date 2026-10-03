@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { readLlmOverride } from '@/server/byok';
 import { ApiError, readJson, requireString, toErrorResponse } from '@/server/http';
 import { chat, extractJson } from '@/server/llm';
 import { gradeShortMessages } from '@/server/prompts';
@@ -41,6 +42,7 @@ const LETTERS = 'ABCDEFGH';
  */
 export async function POST(req: Request) {
   try {
+    const override = readLlmOverride(req);
     const body = await readJson<GradeBody>(req);
     const ctx = requireContext(body.contextId);
 
@@ -58,11 +60,12 @@ export async function POST(req: Request) {
       if (!reference) throw new ApiError(410, '题目答案已失效，请重新出题');
 
       // 只喂与题目相关的资料片段，供模型核对要点
-      const bundle = await contextForAsk(ctx, prompt);
+      const bundle = await contextForAsk(ctx, prompt, [], override);
 
       const raw = await chat(gradeShortMessages(ctx, prompt, reference, answer, bundle.text), {
         temperature: 0.2,
         maxTokens: 2500,
+        override,
       });
 
       const draft = extractJson<GradeDraft>(raw, '简答题判分');

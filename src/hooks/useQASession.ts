@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAgentClient } from '@/lib/agent';
+import { useAgentMode } from '@/hooks/useLlmSettings';
 import type {
   ChatMessage,
   ChatMode,
@@ -26,7 +27,9 @@ function isPendingQuestion(m: ChatMessage): m is Extract<ChatMessage, { kind: 'q
 }
 
 export function useQASession() {
-  const agent = useMemo(() => getAgentClient(), []);
+  /** 用户自带 Key 时会从 mock 切到真实后端，因此这里要跟着模式走 */
+  const agentMode = useAgentMode();
+  const agent = useMemo(() => getAgentClient(), [agentMode]);
 
   const [phase, setPhase] = useState<SessionPhase>('idle');
   const [context, setContext] = useState<UrlContext | null>(null);
@@ -132,6 +135,18 @@ export function useQASession() {
     setPulsing(false);
     generatingRef.current = false;
   }, []);
+
+  /**
+   * 实现换了（用户在设置里存/清了自己的 Key）就作废当前会话。
+   * contextId 是服务端内存里的会话，换实现等于换后端 —— 旧 id 在新后端里不存在，
+   * 继续用只会一路 410。这里直接退回 URL 输入页，让他重新建立上下文。
+   */
+  const modeRef = useRef(agentMode);
+  useEffect(() => {
+    if (modeRef.current === agentMode) return;
+    modeRef.current = agentMode;
+    resetSession();
+  }, [agentMode, resetSession]);
 
   /* ---------------- 提问模式 ---------------- */
 
@@ -384,6 +399,7 @@ export function useQASession() {
     phase,
     context,
     mode,
+    agentMode,
     questionType,
     messages,
     status,
