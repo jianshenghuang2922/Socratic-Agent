@@ -66,7 +66,7 @@ npm run dev              # http://localhost:3000
 
 提问模式优先走 `/ask/stream`；若在**吐字之前**失败会静默退回 `/ask`，已吐字则直接报错（重放会造成内容重复）。
 
-**正确答案只保存在服务端**（`src/server/store.ts`），从不下发前端。
+**采用只保存在服务端**（`src/server/store.ts`），从不下发前端。
 
 ## 目录结构
 
@@ -89,13 +89,4 @@ render.yaml       Render 部署配置
 - `npm run typecheck` 做类型检查；`/api/agent/inspect` 是仅开发环境可用的检索调试端点
 - `npm run dev` 走 Turbopack。**不要改回 webpack**：webpack 模式下 `next dev` 会同步等待 `registry.npmjs.org` 的版本检查，该请求没有超时也没有 abort 兜底，代理不通时会一直卡到 TCP 超时（约 45 秒），期间浏览器打不开页面
 
-## 部署
 
-推到 `master` 即自动部署到 Render。环境变量在 Render 控制台配置，`.env` 不入库。
-
-**不要部署到 Vercel / Netlify 等 serverless 平台**，两个硬冲突：
-
-1. 会话状态在进程内存（`src/server/store.ts`）。serverless 每个请求可能落到不同实例、实例随时销毁，用户建完上下文立刻拿到 `410`。
-2. 仓库分析最长 15 分钟（`ANALYSIS_TIMEOUT_SECONDS=900`），且问答走 SSE 长连接。serverless 的函数执行上限会把它拦腰砍断。
-
-正解是常驻容器平台（Render / Railway / Zeabur / Fly.io），连 GitHub 自动部署，零代码改动。
