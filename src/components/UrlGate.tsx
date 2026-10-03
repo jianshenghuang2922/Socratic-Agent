@@ -9,7 +9,7 @@ interface Props {
 }
 
 const SAMPLES = [
-  { label: 'nextjs.org/docs/app', url: 'https://nextjs.org/docs/app' },
+  { label: 'Socratic-Agent', url: 'https://github.com/jianshenghuang2922/Socratic-Agent'},
   { label: '维基百科 · 苏格拉底', url: 'https://zh.wikipedia.org/wiki/苏格拉底' },
   { label: 'github.com/vercel/next.js', url: 'https://github.com/vercel/next.js' },
 ];
