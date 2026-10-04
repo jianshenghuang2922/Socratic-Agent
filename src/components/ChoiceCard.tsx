@@ -8,10 +8,12 @@ interface Props {
   question: ChoiceQuestion;
   disabled?: boolean;
   onSubmit: (selectedIndex: number) => void;
+  /** 「给点提示」：只请求引导，不判分、不给答案 */
+  onHint?: () => void;
 }
 
 /** 选择题卡片：单选按钮式选项，提交后揭示正确答案与解析 */
-export function ChoiceCard({ question, disabled, onSubmit }: Props) {
+export function ChoiceCard({ question, disabled, onSubmit, onHint }: Props) {
   const [picked, setPicked] = useState<number | null>(question.selectedIndex ?? null);
   const submitted = question.submitted === true;
   const abandoned = question.abandoned === true;
@@ -62,8 +64,25 @@ export function ChoiceCard({ question, disabled, onSubmit }: Props) {
         ))}
       </div>
 
+      {question.hint && (
+        <div className="hint">
+          <span className="hint-label">提示</span>
+          {question.hint}
+        </div>
+      )}
+
       {!submitted && !abandoned && (
         <div className="card-actions">
+          {onHint && !question.hint && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm btn--hint"
+              disabled={disabled}
+              onClick={onHint}
+            >
+              给点提示
+            </button>
+          )}
           <button
             type="button"
             className="btn btn--primary"

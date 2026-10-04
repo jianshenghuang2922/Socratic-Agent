@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChoiceGrade,
   ChoiceQuestion,
+  Question,
   ShortGrade,
   ShortQuestion,
   UrlContext,
@@ -234,5 +235,16 @@ export class MockAgentClient implements AgentClient {
               ? '只答到了一两个要点，建议对照参考答案补齐。'
               : '作答与参考答案的关键要点不符，建议重新组织。';
     return { score, feedback, reference };
+  }
+
+  /**
+   * 提示：只给思路，不给答案。
+   * Mock 下没法真的读题干，给一句通用的启发式引导，保证前端链路能跑通。
+   */
+  async requestHint(question: Question): Promise<string> {
+    await sleep(700);
+    return question.type === 'choice'
+      ? '先别急着排除选项：回到资料里确认这一步真正的职责是什么，再逐项对照 —— 与职责对得上的那个选项，描述里往往会出现资料原文中的关键词。'
+      : '试着先想清楚「它一共做了哪几件事」，再按先后顺序把它们串起来；对照资料原文逐个核对，别漏掉中间那一步。';
   }
 }

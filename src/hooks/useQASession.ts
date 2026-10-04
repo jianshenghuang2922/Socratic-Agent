@@ -35,6 +35,12 @@ export function useQASession() {
   const [context, setContext] = useState<UrlContext | null>(null);
   const [mode, setMode] = useState<ChatMode>('ask');
   const [questionType, setQuestionType] = useState<QuestionType>('choice');
+  /**
+   * 回答模式下，题型是否已由用户亲自选定。
+   * 未选定前不出题 —— 否则「切换到回答模式」等于替用户默认选了选择题并立刻开跑，
+   * 而出题期间题型按钮被 busy 锁死，用户想改都改不了。
+   */
+  const [typeChosen, setTypeChosen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<StatusState>({ kind: 'idle', text: '' });
   const [busy, setBusy] = useState(false);
@@ -113,7 +119,7 @@ export function useQASession() {
             ts: Date.now(),
             content: `已建立问答上下文：**${ctx.title}**\n\n${ctx.summary ?? ''}${
               ctx.chunks ? `\n\n已建立检索索引（${ctx.chunks} 个语义块），提问与出题都会先从这里检索相关内容。` : ''
-            }\n\n当前为「提问模式」，你可以直接向我提问；切换到「回答模式」则由我来出题。`,
+            }\n\n当前为「提问模式」，你可以直接向我提问；切换到「回答模式」则由我来出题 —— 题型（选择题 / 简答题）由你选定后才会开始。`,
           },
         ]);
         setStatus({ kind: 'success', text: '上下文已就绪' });
@@ -134,6 +140,7 @@ export function useQASession() {
     setMessages([]);
     setMode('ask');
     setQuestionType('choice');
+    setTypeChosen(false);
     setStatus({ kind: 'idle', text: '' });
     setBusy(false);
     // 换 URL = 开新会话，得分与题数一并归零
@@ -339,6 +346,35 @@ export function useQASession() {
     [agent, award, fail, messages, patchQuestion, push],
   );
 
+  /**
+   * 「给点提示」：只把引导文案挂到题目上。
+   * 刻意不做的事 —— 不置 submitted、不计分、不写用户记忆（他还没作答，
+   * 写进去会污染薄弱点统计，导致后续出题误判他「答错过」）。
+   */
+  const requestHint = useCallback(
+    async (messageId: string) => {
+      const target = messages.find((m) => m.id === messageId);
+      if (!target || target.kind !== 'question') return;
+      const question = target.question;
+      // 已作答 / 已作废 / 已给过提示 —— 都没必要再要一次
+      if (question.submitted === true || question.abandoned === true || question.hint) return;
+
+      setBusy(true);
+      setStatus({ kind: 'thinking', text: '正在生成提示…' });
+      try {
+        const hint = await agent.requestHint(question);
+        patchQuestion(messageId, { hint });
+        setStatus({ kind: 'success', text: '已给出提示 · 只引导思路，不替代作答' });
+      } catch (err) {
+        fail(err);
+        return;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [agent, fail, messages, patchQuestion],
+  );
+
   /* ---------------- 模式 / 题型切换 ---------------- */
 
   const changeMode = useCallback(
@@ -350,6 +386,11 @@ export function useQASession() {
         pushNotice('已切换到「提问模式」，输入你的问题即可。');
         return;
       }
+      // 还没选过题型：不替用户决定，也不提前开跑，先等他点题型
+      if (!typeChosen) {
+        pushNotice('已切换到「回答模式」，请先在上方选择题型（选择题 / 简答题），选定后我会立即出题。');
+        return;
+      }
       pushNotice(
         `已切换到「回答模式」，我将基于 URL 内容主动出题（当前题型：${questionType === 'choice' ? '选择题' : '简答题'}）。`,
       );
@@ -357,17 +398,21 @@ export function useQASession() {
       const hasPending = messages.some(isPendingQuestion);
       if (!hasPending) void requestNextQuestion(questionType);
     },
-    [messages, mode, pushNotice, questionType, requestNextQuestion],
+    [messages, mode, pushNotice, questionType, requestNextQuestion, typeChosen],
   );
 
   const changeQuestionType = useCallback(
     (next: QuestionType) => {
-      if (next === questionType) return;
+      // 已选过同一题型 → 不重复出题。首次选择时即使等于默认值也必须放行，
+      // 否则「切到回答模式 → 点选择题」会因相等而被吞掉，页面永远停在无题状态。
+      if (next === questionType && typeChosen) return;
 
       const label = next === 'choice' ? '选择题' : '简答题';
       const hasPending = messages.some(isPendingQuestion);
+      const firstPick = !typeChosen;
 
       setQuestionType(next);
+      setTypeChosen(true);
 
       if (hasPending) {
         // 上一题还没作答，直接留着只会让人困惑：作废它，另出一道新题型的题。
@@ -380,12 +425,12 @@ export function useQASession() {
         );
         pushNotice(`题型已切换为「${label}」，上一题尚未作答，已作废并重新出题。`);
       } else {
-        pushNotice(`题型已切换为「${label}」。`);
+        pushNotice(firstPick ? `已选择题型「${label}」，正在出题…` : `题型已切换为「${label}」。`);
       }
 
       void requestNextQuestion(next);
     },
-    [messages, pushNotice, questionType, requestNextQuestion],
+    [messages, pushNotice, questionType, requestNextQuestion, typeChosen],
   );
 
   /** 当前是否有等待作答的题目 */
@@ -407,6 +452,7 @@ export function useQASession() {
     mode,
     agentMode,
     questionType,
+    typeChosen,
     messages,
     status,
     busy,
@@ -419,6 +465,7 @@ export function useQASession() {
     sendAsk,
     submitChoice,
     submitShort,
+    requestHint,
     changeMode,
     changeQuestionType,
     requestNextQuestion,

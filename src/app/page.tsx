@@ -69,7 +69,7 @@ export default function Page() {
             <ModeTabs mode={s.mode} onChange={s.changeMode} disabled={s.busy} />
             {s.mode === 'answer' && (
               <QuestionTypeTabs
-                value={s.questionType}
+                value={s.typeChosen ? s.questionType : null}
                 onChange={s.changeQuestionType}
                 disabled={s.busy}
               />
@@ -89,6 +89,7 @@ export default function Page() {
               busy={s.busy}
               onChoiceSubmit={s.submitChoice}
               onShortSubmit={s.submitShort}
+              onHint={s.requestHint}
               onNextQuestion={() => s.requestNextQuestion()}
             />
           </main>
@@ -102,7 +103,9 @@ export default function Page() {
           ) : (
             <div className="composer composer--locked">
               <div className="locked-hint">
-                回答模式下，请在题目卡片中作答；点击「下一题」继续。
+                {s.typeChosen
+                  ? '回答模式下，请在题目卡片中作答；点击「下一题」继续。'
+                  : '请先在上方选择题型（选择题 / 简答题），选定后我会立即出题。'}
               </div>
             </div>
           )}

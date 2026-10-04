@@ -275,3 +275,76 @@ ${context}
     { role: 'user', content: `学生作答：\n${answer}\n\n请只输出 JSON。` },
   ];
 }
+
+/* ------------------------------------------------------------------ */
+/* 给点提示                                                            */
+/* ------------------------------------------------------------------ */
+
+export interface HintPromptInput {
+  type: 'choice' | 'short';
+  prompt: string;
+  /** 选择题选项 */
+  options?: string[];
+  /** 选择题正确答案下标 —— 内部信息，禁止出现在提示里 */
+  correctIndex?: number;
+  /** 选择题解析 —— 内部信息 */
+  explanation?: string;
+  /** 简答题参考答案 —— 内部信息 */
+  reference?: string;
+}
+
+/**
+ * 回答模式：学生卡住时「给点提示」。
+ *
+ * 与判分是两件事：这里只给启发式引导，**不给答案、不做评价、不推进作答状态**。
+ * 提示要落到资料里的具体名称上，否则就成了「再读一遍题」这种废话。
+ *
+ * 正确方向以「内部信息」的形式喂给模型 —— 不然它只能瞎猜，引导会指错方向；
+ * 同时在提示词里划死线：这些内容不得出现在提示正文中。
+ */
+export function hintMessages(
+  ctx: StoredContext,
+  input: HintPromptInput,
+  context: string,
+): ChatMessage[] {
+  const letters = 'ABCDEFGH';
+  const privateBlock =
+    input.type === 'choice'
+      ? `选项：\n${(input.options ?? []).map((o, i) => `${letters[i] ?? i + 1}. ${o}`).join('\n')}\n正确答案：${
+          letters[input.correctIndex ?? 0] ?? '?'
+        }\n解析：${input.explanation?.trim() || '（无）'}`
+      : `参考答案：${input.reference?.trim() || '（无）'}`;
+
+  const forbidAnswer =
+    input.type === 'choice'
+      ? '- 禁止说出正确答案：不得指明是哪个选项，不得排除到只剩一个选项，不得出现「答案是」「选 X」这类字样。'
+      : '- 禁止把参考答案的要点逐条念出来，只提示「该从哪几个方面想」。';
+
+  const system = `你是一位善于启发、从不直接报答案的辅导老师。
+
+学生正在作答下面这道题，现在卡住了，点了「给点提示」。请给他一个**启发式引导**，帮他想到思路，但**绝对不要给出答案**。
+
+【必须做到】
+1. 指出可以从资料的哪个部分、哪个文件 / 函数 / 概念入手，名称要照抄资料原文。
+2. 点明思考方向或判断依据（例如「注意区分 X 和 Y 各自负责什么」），让他自己往下推。
+3. 2 ~ 3 句话，不超过 120 字，用简体中文，直接输出提示正文。
+
+【绝对禁止】
+${forbidAnswer}
+- 禁止复述题干、禁止寒暄、禁止用「这道题考查的是……」这类套话开头。
+- 不要评价学生 —— 他还没有作答。
+
+【仅供你判断方向、不得出现在提示中的内部信息】
+题目：${input.prompt}
+${privateBlock}
+
+资料（来源：${ctx.url}）：
+"""
+${context}
+"""`;
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: '请只输出提示正文，不要任何前后缀。' },
+  ];
+}

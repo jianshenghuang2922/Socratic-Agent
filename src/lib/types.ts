@@ -65,6 +65,11 @@ export interface ChoiceQuestion {
   /** 提交后由 Agent 返回 */
   correctIndex?: number;
   explanation?: string;
+  /**
+   * 「给点提示」返回的引导文案。
+   * 只引导思路，不含正确答案，也**不代表已作答** —— 提示后仍可正常提交。
+   */
+  hint?: string;
   /** 出题时依据的资料块标签（RAG 溯源） */
   sources?: string[];
 }
@@ -85,6 +90,8 @@ export interface ShortQuestion {
   feedback?: string;
   /** 参考答案 */
   reference?: string;
+  /** 「给点提示」返回的引导文案，含义同 ChoiceQuestion.hint */
+  hint?: string;
   /** 出题时依据的资料块标签（RAG 溯源） */
   sources?: string[];
 }
@@ -178,4 +185,10 @@ export interface AgentClient {
 
   /** 回答模式：判定简答题作答 */
   gradeShort(question: ShortQuestion, answer: string): Promise<ShortGrade>;
+
+  /**
+   * 回答模式：卡住时请求一个提示。
+   * 与判分互不相干 —— 只返回启发式引导（不给答案），不改动作答状态、不计分。
+   */
+  requestHint(question: Question): Promise<string>;
 }

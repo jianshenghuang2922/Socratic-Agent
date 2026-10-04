@@ -13,6 +13,7 @@ interface Props {
   busy: boolean;
   onChoiceSubmit: (messageId: string, index: number) => void;
   onShortSubmit: (messageId: string, answer: string) => void;
+  onHint: (messageId: string) => void;
   onNextQuestion: () => void;
 }
 
@@ -23,6 +24,7 @@ export function MessageList({
   busy,
   onChoiceSubmit,
   onShortSubmit,
+  onHint,
   onNextQuestion,
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -61,12 +63,14 @@ export function MessageList({
                     question={m.question}
                     disabled={busy}
                     onSubmit={(i) => onChoiceSubmit(m.id, i)}
+                    onHint={() => onHint(m.id)}
                   />
                 ) : (
                   <ShortCard
                     question={m.question}
                     disabled={busy}
                     onSubmit={(a) => onShortSubmit(m.id, a)}
+                    onHint={() => onHint(m.id)}
                   />
                 )}
               </div>

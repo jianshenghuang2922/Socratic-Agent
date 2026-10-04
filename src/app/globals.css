@@ -593,6 +593,26 @@ textarea {
   box-shadow: 0 8px 22px -10px rgba(91, 140, 255, 0.95), inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
+/* 尚未选定题型：整段呼吸提示，明确告诉用户「这里需要你点一下」 */
+.segmented--pick {
+  border-color: var(--accent-line);
+  animation: segmented-pick 2.1s ease-in-out infinite;
+}
+
+.segmented--pick .segment {
+  color: var(--text);
+}
+
+@keyframes segmented-pick {
+  0%,
+  100% {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 2px rgba(91, 140, 255, 0.1);
+  }
+  50% {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 6px rgba(91, 140, 255, 0.2);
+  }
+}
+
 /* ============================================================
    得分模块（右上角）
    ============================================================ */
@@ -1121,7 +1141,14 @@ textarea {
 .card-actions {
   margin-top: 16px;
   display: flex;
+  align-items: center;
+  gap: 10px;
   justify-content: flex-end;
+}
+
+/* 「给点提示」是辅助动作，靠左，与「提交答案」拉开距离，避免误点 */
+.btn--hint {
+  margin-right: auto;
 }
 
 .short-input {
@@ -1238,6 +1265,31 @@ textarea {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
+  margin-bottom: 4px;
+}
+
+/* 「给点提示」：只引导思路，用暖色与「解析 / 参考答案」的蓝色系区分开 */
+.hint {
+  margin-top: 14px;
+  font-size: 13.5px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-left: 2px solid rgba(251, 191, 36, 0.62);
+  border-radius: 4px 12px 12px 4px;
+  padding: 11px 14px;
+  line-height: 1.75;
+  animation: rise 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.hint-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mid);
   margin-bottom: 4px;
 }
 

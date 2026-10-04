@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   ChoiceGrade,
   ChoiceQuestion,
+  Question,
   ShortGrade,
   ShortQuestion,
   UrlContext,
@@ -233,6 +234,17 @@ export class HttpAgentClient implements AgentClient {
       question: { id: question.id, prompt: question.prompt },
       answer,
     });
+  }
+
+  /** 卡住时的提示：只拿回引导文案，不改动本地作答状态 */
+  async requestHint(question: Question): Promise<string> {
+    const r = await this.post<{ hint: string }>('/api/agent/hint', {
+      contextId: this.session(),
+      type: question.type,
+      questionId: question.id,
+      question: { id: question.id, prompt: question.prompt },
+    });
+    return r.hint;
   }
 }
 

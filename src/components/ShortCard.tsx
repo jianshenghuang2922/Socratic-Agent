@@ -8,12 +8,14 @@ interface Props {
   question: ShortQuestion;
   disabled?: boolean;
   onSubmit: (answer: string) => void;
+  /** 「给点提示」：只请求引导，不判分、不给答案 */
+  onHint?: () => void;
 }
 
 const SCORE_LABEL = ['未掌握', '薄弱', '待加强', '及格', '良好', '优秀'] as const;
 
 /** 简答题卡片：多行文本输入，提交后给出 AI 评分（0 ~ 5）、反馈与参考答案 */
-export function ShortCard({ question, disabled, onSubmit }: Props) {
+export function ShortCard({ question, disabled, onSubmit, onHint }: Props) {
   const [draft, setDraft] = useState('');
   const submitted = question.submitted === true;
   const abandoned = question.abandoned === true;
@@ -46,7 +48,23 @@ export function ShortCard({ question, disabled, onSubmit }: Props) {
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
           />
+          {question.hint && (
+            <div className="hint">
+              <span className="hint-label">提示</span>
+              {question.hint}
+            </div>
+          )}
           <div className="card-actions">
+            {onHint && !question.hint && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm btn--hint"
+                disabled={disabled}
+                onClick={onHint}
+              >
+                给点提示
+              </button>
+            )}
             <button
               type="button"
               className="btn btn--primary"
