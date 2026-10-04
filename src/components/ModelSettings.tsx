@@ -38,8 +38,18 @@ export function ModelSettings({ open, onClose, settings, serverInfo, onSave, onC
     setApiKey(settings?.apiKey ?? '');
     setModel(settings?.model ?? '');
     setError('');
-    setSaved(false);
   }, [open, settings]);
+
+  /*
+   * 「已保存」的复位必须只跟 open 走。
+   * 保存成功后 settings 会立刻变成新对象 —— 如果把它也放进上面那个 effect 的依赖里，
+   * 复位会在同一轮提交后立刻执行，刚点亮的「已保存 ✓」一帧就被抹掉，
+   * 用户根本看不到保存成功的反馈。
+   */
+  useEffect(() => {
+    if (!open) return;
+    setSaved(false);
+  }, [open]);
 
   // Esc 关闭
   useEffect(() => {

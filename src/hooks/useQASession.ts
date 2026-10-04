@@ -18,7 +18,7 @@ import type {
 let seq = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(seq += 1)}`;
 
-/** 回答模式下每答对一题的分值 */
+/** 选择题答对的分值；简答题满分同值（得几分加几分） */
 export const POINTS_PER_CORRECT = 5;
 
 /** 判断一条消息是否是「待作答的题目」（被作废的不算） */
@@ -54,9 +54,10 @@ export function useQASession() {
     return () => clearTimeout(timer);
   }, [pulseAt]);
 
-  /** 答对一题：加分 + 触发高亮 */
-  const award = useCallback(() => {
-    setScore((prev) => prev + POINTS_PER_CORRECT);
+  /** 加分并触发高亮；简答题按得分传点数，0 分不加也不闪 */
+  const award = useCallback((points: number = POINTS_PER_CORRECT) => {
+    if (points <= 0) return;
+    setScore((prev) => prev + points);
     setPulseAt(Date.now());
   }, []);
 
@@ -77,7 +78,14 @@ export function useQASession() {
   const fail = useCallback(
     (err: unknown) => {
       const text = err instanceof Error ? err.message : String(err);
-      setStatus({ kind: 'error', text: '出错了' });
+      /*
+       * 状态栏文案必须是真实原因，不能退化成一句「出错了」。
+       * 建立上下文失败时页面停在 URL 输入页 —— 那里没有消息列表，
+       * 唯一能看到错误的地方就是状态栏（UrlGate 直接读 status.text）。
+       * 写成「出错了」等于把「404 页面不存在」「该仓库为私有」这类
+       * 可直接行动的信息全部丢掉。超长文案由 CSS 省略号处理。
+       */
+      setStatus({ kind: 'error', text });
       pushNotice(`⚠️ ${text}`);
       setBusy(false);
     },
@@ -308,20 +316,18 @@ export function useQASession() {
         const grade = await agent.gradeShort(question, text);
         patchQuestion(messageId, {
           submitted: true,
-          verdict: grade.verdict,
+          score: grade.score,
           feedback: grade.feedback,
           reference: grade.reference,
         });
-        // 只有完全答对才计分，部分正确不给分
-        if (grade.verdict === 'correct') award();
+        // 简答题按 AI 给的分数计分：得几分加几分，满分即 POINTS_PER_CORRECT
+        award(grade.score);
         setStatus({
           kind: 'success',
           text:
-            grade.verdict === 'correct'
-              ? `回答正确 · +${POINTS_PER_CORRECT} 分`
-              : grade.verdict === 'partial'
-                ? '部分正确 · 不计分'
-                : '回答错误',
+            grade.score > 0
+              ? `得分 ${grade.score} / ${POINTS_PER_CORRECT} · +${grade.score} 分`
+              : '得分 0 / 5 · 未得分',
         });
       } catch (err) {
         fail(err);

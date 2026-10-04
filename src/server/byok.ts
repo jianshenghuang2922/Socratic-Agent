@@ -19,6 +19,7 @@
 
 import type { LlmOverride } from './config';
 import { ApiError } from './http';
+import { isPrivateHostname } from './net';
 
 export const HEADER_API_KEY = 'x-llm-api-key';
 export const HEADER_BASE_URL = 'x-llm-base-url';
@@ -28,13 +29,6 @@ export const HEADER_MODEL = 'x-llm-model';
 const MAX_KEY_LEN = 512;
 const MAX_URL_LEN = 300;
 const MAX_MODEL_LEN = 160;
-
-/**
- * 回环 / 私有 / link-local / 内部域名。
- * 注意 172.16.0.0/12 只覆盖 172.16 ~ 172.31，别写成 172. 通配。
- */
-const PRIVATE_HOST =
-  /^(localhost|0\.0\.0\.0|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)|(\.localhost|\.local|\.internal|\.lan|\.home|\.corp)$|^\[?::1\]?$/i;
 
 function header(req: Request, name: string, max: number): string {
   const raw = req.headers.get(name);
@@ -56,7 +50,7 @@ export function normalizeBaseUrl(input: string): string {
   }
 
   const allowPrivate = process.env.ALLOW_PRIVATE_LLM_BASE_URL === '1';
-  if (!allowPrivate && PRIVATE_HOST.test(url.hostname)) {
+  if (!allowPrivate && isPrivateHostname(url.hostname)) {
     throw new ApiError(
       400,
       '出于安全考虑，自定义网关地址不能指向本机或内网地址。如果你在本地跑网关，请在服务端设置 ALLOW_PRIVATE_LLM_BASE_URL=1。',

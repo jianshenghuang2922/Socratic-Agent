@@ -417,6 +417,18 @@ textarea {
   transition: color 0.2s, background 0.2s, border-color 0.2s;
 }
 
+/*
+ * 状态文案可能是整句错误原因（如「抓取网页失败：目标返回 404 …」）。
+ * 不给上限的话这行 nowrap 文本会把吸顶栏越撑越宽，把 URL 芯片挤走。
+ * 截断处用省略号收口，完整内容仍在 title 与消息区的提示气泡里。
+ */
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
 .status--loading,
 .status--thinking {
   color: #bcd4ff;
@@ -1179,6 +1191,23 @@ textarea {
   background: var(--mid-soft);
   border-color: rgba(251, 191, 36, 0.4);
   box-shadow: 0 0 26px -12px rgba(251, 191, 36, 0.9);
+}
+
+.verdict-num {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.verdict-num em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.75;
 }
 
 .verdict-sub {
@@ -2004,6 +2033,10 @@ textarea {
     order: 2;
     padding: 5px 10px;
     font-size: 11.5px;
+  }
+
+  .status-text {
+    max-width: 130px;
   }
 
   /* 固定 basis 把 URL 芯片挤到第二行，与「重新输入」并排 */

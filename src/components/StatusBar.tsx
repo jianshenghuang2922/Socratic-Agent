@@ -16,14 +16,17 @@ export function StatusBar({ status }: { status: StatusState }) {
     return (
       <div className="status status--idle">
         <span className="dot dot--idle" />
-        就绪
+        <span className="status-text">就绪</span>
       </div>
     );
   }
   return (
     <div className={`status status--${status.kind}`} role="status" aria-live="polite">
       <span className={`dot ${DOT[status.kind]}`} />
-      {status.text}
+      {/* 文案可能是整句错误原因，交给 .status-text 用省略号收口，避免撑爆吸顶栏 */}
+      <span className="status-text" title={status.text}>
+        {status.text}
+      </span>
     </div>
   );
 }

@@ -10,13 +10,9 @@ interface Props {
   onSubmit: (answer: string) => void;
 }
 
-const VERDICT_TEXT = {
-  correct: '✓ 回答正确',
-  partial: '◐ 部分正确',
-  incorrect: '✕ 回答错误',
-} as const;
+const SCORE_LABEL = ['未掌握', '薄弱', '待加强', '及格', '良好', '优秀'] as const;
 
-/** 简答题卡片：多行文本输入，提交后给出判定、反馈与参考答案 */
+/** 简答题卡片：多行文本输入，提交后给出 AI 评分（0 ~ 5）、反馈与参考答案 */
 export function ShortCard({ question, disabled, onSubmit }: Props) {
   const [draft, setDraft] = useState('');
   const submitted = question.submitted === true;
@@ -67,8 +63,12 @@ export function ShortCard({ question, disabled, onSubmit }: Props) {
             <span className="explain-label">我的作答</span>
             {question.answer}
           </div>
-          <div className={`verdict ${verdictClass(question.verdict)}`}>
-            {VERDICT_TEXT[question.verdict ?? 'incorrect']}
+          <div className={`verdict ${scoreClass(question.score)}`}>
+            <span className="verdict-num">
+              {question.score ?? 0}
+              <em>/ 5</em>
+            </span>
+            <span className="verdict-sub">{SCORE_LABEL[question.score ?? 0]}</span>
           </div>
           {question.feedback && (
             <div className="explain">
@@ -88,8 +88,10 @@ export function ShortCard({ question, disabled, onSubmit }: Props) {
   );
 }
 
-function verdictClass(v: ShortQuestion['verdict']) {
-  if (v === 'correct') return 'verdict--ok';
-  if (v === 'partial') return 'verdict--mid';
+/** 分数分档：4 分及以上算掌握，1 分及以上算部分掌握，0 分算未掌握 */
+function scoreClass(score: number | undefined) {
+  if (score === undefined) return 'verdict--bad';
+  if (score >= 4) return 'verdict--ok';
+  if (score >= 2) return 'verdict--mid';
   return 'verdict--bad';
 }

@@ -4,12 +4,16 @@ import { ApiError, readJson, requireString, toErrorResponse } from '@/server/htt
 import { chat, extractJson } from '@/server/llm';
 import { gradeShortMessages } from '@/server/prompts';
 import { contextForAsk } from '@/server/rag';
-import { getAnswerKey, recordInteraction, requireContext, type Verdict } from '@/server/store';
+import {
+  getAnswerKey,
+  MAX_SHORT_SCORE,
+  recordInteraction,
+  requireContext,
+  verdictForScore,
+} from '@/server/store';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
-
-const VERDICTS: readonly Verdict[] = ['correct', 'partial', 'incorrect'];
 
 interface GradeBody {
   contextId?: string;
@@ -23,8 +27,19 @@ interface GradeBody {
 }
 
 interface GradeDraft {
-  verdict?: unknown;
+  score?: unknown;
   feedback?: unknown;
+}
+
+/**
+ * 把模型给的分数收严成 0 ~ 5 的整数。
+ * 模型偶尔会把 score 写成字符串（"4"）或越界（7 / -1），
+ * 越界就夹到边界，完全拿不到数字才当输出不合规上抛。
+ */
+function parseScore(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : Number.NaN;
+  if (!Number.isFinite(n)) throw new ApiError(502, '模型没有给出有效分数');
+  return Math.min(MAX_SHORT_SCORE, Math.max(0, Math.round(n)));
 }
 
 const LETTERS = 'ABCDEFGH';
@@ -35,7 +50,7 @@ const LETTERS = 'ABCDEFGH';
  *       { contextId, type, questionId, question, answer } —— 简答题
  *
  * 选择题不调模型：直接比对服务端留存的答案键，零成本、零延迟、判定确定。
- * 简答题必须调模型：参考答案只存在服务端，模型批改后返回 verdict 与点评。
+ * 简答题必须调模型：参考答案只存在服务端，模型按采分点覆盖度打 0 ~ 5 分并给出点评。
  *
  * 判分完成后，这次作答会作为「用户回复」写进会话记忆并进入检索索引 ——
  * 后续出题会针对答错的知识点换角度再问。
@@ -52,7 +67,7 @@ export async function POST(req: Request) {
     const key = getAnswerKey(ctx.id, questionId);
     if (!key) throw new ApiError(410, '题目答案已失效，请重新出题');
 
-    /* ---------------- 简答题：交给模型批改 ---------------- */
+    /* ---------------- 简答题：交给模型按采分点打分 ---------------- */
     if (body.type === 'short') {
       const prompt = requireString(body.question?.prompt ?? key.prompt, 'question.prompt', 1000);
       const answer = requireString(body.answer, 'answer', 4000);
@@ -69,9 +84,8 @@ export async function POST(req: Request) {
       });
 
       const draft = extractJson<GradeDraft>(raw, '简答题判分');
-      const verdict: Verdict = VERDICTS.includes(draft.verdict as Verdict)
-        ? (draft.verdict as Verdict)
-        : 'partial';
+      const score = parseScore(draft.score);
+      const verdict = verdictForScore(score);
       const feedback =
         typeof draft.feedback === 'string' && draft.feedback.trim()
           ? draft.feedback.trim().slice(0, 600)
@@ -83,11 +97,12 @@ export async function POST(req: Request) {
         userAnswer: answer,
         correct: verdict === 'correct',
         verdict,
+        score,
         sourceLabels: key.sourceLabels ?? [],
         knowledge: [reference, feedback].filter(Boolean).join('\n'),
       });
 
-      return NextResponse.json({ verdict, feedback, reference });
+      return NextResponse.json({ score, feedback, reference });
     }
 
     /* ---------------- 选择题：纯服务端比对 ---------------- */
@@ -95,8 +110,13 @@ export async function POST(req: Request) {
       throw new ApiError(410, '题目答案已失效，请重新出题');
     }
 
-    const selectedIndex = Number(body.selectedIndex);
-    if (!Number.isInteger(selectedIndex)) {
+    /*
+     * 必须收严：`Number(body.selectedIndex)` 对 undefined 是 NaN（会被下面拦住），
+     * 但对 null / '' / '  ' 一律得到 0 —— 一个畸形请求会被静默判成「选了 A」，
+     * 既给出错误结果，又把错误的作答记录写进会话记忆。
+     */
+    const selectedIndex = body.selectedIndex;
+    if (typeof selectedIndex !== 'number' || !Number.isInteger(selectedIndex)) {
       throw new ApiError(400, '缺少必填字段：selectedIndex');
     }
     // 越界的下标不报错的话，只会静默判成「错」，还会把记录写歪

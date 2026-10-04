@@ -24,6 +24,20 @@ export interface AnswerKey {
 
 export type Verdict = 'correct' | 'partial' | 'incorrect';
 
+/** 简答题满分 */
+export const MAX_SHORT_SCORE = 5;
+/**
+ * 简答题达到这个分数才算「答对」。
+ * 打分是连续的，但薄弱点统计、检索归档仍需要一个是非判断 —— 4 分及以上视为掌握。
+ */
+export const PASS_SHORT_SCORE = 4;
+
+/** 把 0 ~ 5 的得分映射回三档 verdict（仅用于统计与检索归档，不对外展示） */
+export function verdictForScore(score: number): Verdict {
+  if (score >= PASS_SHORT_SCORE) return 'correct';
+  return score > 0 ? 'partial' : 'incorrect';
+}
+
 /**
  * 一次「用户回复」的完整记录。
  *
@@ -39,6 +53,8 @@ export interface Interaction {
   userAnswer: string;
   correct: boolean;
   verdict: Verdict;
+  /** 简答题得分 0 ~ 5；选择题没有这个概念 */
+  score?: number;
   /** 题目知识点所在的资料块标签，用于回捞原文 */
   sourceLabels: string[];
   /** 服务端给出的解析 / 参考答案 —— 也进索引，用户之后可以检索到 */
@@ -188,10 +204,18 @@ export function newQuestionId(): string {
 
 /** 把一条交互记录转成可检索的文本 */
 function interactionText(it: Interaction): string {
+  const verdictText =
+    typeof it.score === 'number'
+      ? `${it.score}/${MAX_SHORT_SCORE} 分`
+      : it.verdict === 'correct'
+        ? '正确'
+        : it.verdict === 'partial'
+          ? '部分正确'
+          : '错误';
   return [
     `题目：${it.prompt}`,
     `我的作答：${it.userAnswer}`,
-    `判定：${it.verdict === 'correct' ? '正确' : it.verdict === 'partial' ? '部分正确' : '错误'}`,
+    `判定：${verdictText}`,
     it.knowledge ? `解析：${it.knowledge}` : '',
   ]
     .filter(Boolean)
@@ -285,7 +309,7 @@ export function getIndex(ctx: StoredContext): BM25Index {
 }
 
 /**
- * 薄弱点：答错或部分正确的题目。
+ * 薄弱点：答错或部分正确的题目（简答题即得分低于 `PASS_SHORT_SCORE`）。
  * 出题时优先针对这些知识点换角度再问，而不是随机出题。
  */
 export function weakSpots(ctx: StoredContext, limit = 6): Interaction[] {

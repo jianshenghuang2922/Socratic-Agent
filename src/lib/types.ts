@@ -80,8 +80,8 @@ export interface ShortQuestion {
   submitted?: boolean;
   /** 因题型切换被作废，含义同 ChoiceQuestion.abandoned */
   abandoned?: boolean;
-  /** 提交后由 Agent 返回 */
-  verdict?: 'correct' | 'partial' | 'incorrect';
+  /** 提交后由 Agent 返回：AI 按要点覆盖度给出的得分（0 ~ 5 的整数） */
+  score?: number;
   feedback?: string;
   /** 参考答案 */
   reference?: string;
@@ -130,9 +130,10 @@ export interface ChoiceGrade {
   explanation: string;
 }
 
-/** 简答题判分结果 */
+/** 简答题判分结果：由 AI 按要点覆盖度打分，而不是「对/错」二分 */
 export interface ShortGrade {
-  verdict: 'correct' | 'partial' | 'incorrect';
+  /** AI 判定的得分，0 ~ 5 的整数 */
+  score: number;
   feedback: string;
   reference: string;
 }

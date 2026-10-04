@@ -128,20 +128,19 @@ const SHORT_BANK: Omit<ShortQuestion, 'type'>[] = [
   },
 ];
 
-/** 关键词判分的粗糙实现，仅用于 Mock */
-function roughScore(answer: string, reference: string): ShortGrade['verdict'] {
+/** 关键词覆盖度的粗糙打分（0 ~ 5），仅用于 Mock */
+function roughScore(answer: string, reference: string): number {
   const norm = (s: string) => s.replace(/[\s，。、；：？！,.;:?!]/g, '');
   const a = norm(answer);
-  if (a.length < 4) return 'incorrect';
+  if (a.length < 4) return 0;
   const keys = reference
     .split(/[→、；。]/)
     .map((s) => s.replace(/[^\u4e00-\u9fa5A-Za-z]/g, ''))
     .filter((s) => s.length >= 2)
     .slice(0, 6);
+  if (keys.length === 0) return 3;
   const hit = keys.filter((k) => a.includes(k.slice(0, 2))).length;
-  if (hit >= Math.max(2, Math.ceil(keys.length * 0.5))) return 'correct';
-  if (hit >= 1) return 'partial';
-  return 'incorrect';
+  return Math.max(0, Math.min(5, Math.round((hit / keys.length) * 5)));
 }
 
 export class MockAgentClient implements AgentClient {
@@ -223,13 +222,17 @@ export class MockAgentClient implements AgentClient {
   async gradeShort(question: ShortQuestion, answer: string): Promise<ShortGrade> {
     await sleep(900);
     const reference = question.reference ?? '';
-    const verdict = roughScore(answer, reference);
-    const prefix =
-      verdict === 'correct'
-        ? '回答要点基本覆盖，判断为正确。'
-        : verdict === 'partial'
-          ? '方向正确，但要点覆盖不完整。'
-          : '回答与文档内容关联较弱，建议重新组织。';
-    return { verdict, feedback: prefix, reference };
+    const score = roughScore(answer, reference);
+    const feedback =
+      score >= 5
+        ? '要点覆盖完整，表述准确。'
+        : score >= 4
+          ? '覆盖了绝大部分要点，仅有个别遗漏。'
+          : score >= 3
+            ? '方向正确，但遗漏了部分要点。'
+            : score >= 1
+              ? '只答到了一两个要点，建议对照参考答案补齐。'
+              : '作答与参考答案的关键要点不符，建议重新组织。';
+    return { score, feedback, reference };
   }
 }

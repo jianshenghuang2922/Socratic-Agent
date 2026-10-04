@@ -27,6 +27,11 @@ interface StreamFailure extends Error {
   emitted?: boolean;
 }
 
+/** 服务端明确返回过状态码的失败（区别于网络中断 / 流被掐断） */
+interface AgentHttpError extends Error {
+  status?: number;
+}
+
 /**
  * HttpAgentClient —— 对接真实后端的实现。
  *
@@ -66,7 +71,10 @@ export class HttpAgentClient implements AgentClient {
     }
     // 会话/题目已失效：清掉本地 contextId，避免后续请求继续撞同一个 410
     if (res.status === 410) this.contextId = null;
-    return new Error(message);
+    const err = new Error(message) as AgentHttpError;
+    // 带上状态码：调用方据此判断「换接口重发有没有意义」
+    err.status = res.status;
+    return err;
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -106,8 +114,15 @@ export class HttpAgentClient implements AgentClient {
       try {
         return await this.streamAsk(body, onDelta);
       } catch (err) {
+        const failure = err as StreamFailure & AgentHttpError;
         // 已经渲染了部分正文就不能重来 —— 重放会把内容接成两段
-        if ((err as StreamFailure).emitted) throw err;
+        if (failure.emitted) throw err;
+        /*
+         * 服务端已经用状态码明确拒绝（400 参数错 / 410 会话失效 / 422 内容不可用）时，
+         * 换一次性接口重发不会有不同结果 —— 只会白白多跑一次检索与模型调用，
+         * 让用户多等十几秒才看到同一个错误。只有 5xx / 网络层失败才值得退一次。
+         */
+        if (typeof failure.status === 'number' && failure.status < 500) throw err;
         // 一个字都还没吐：静默退回一次性接口，保证问答不中断
         console.warn('[agent] 流式失败，退回一次性接口：', (err as Error).message);
       }

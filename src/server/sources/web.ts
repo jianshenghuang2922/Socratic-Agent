@@ -1,5 +1,6 @@
 import { limits } from '../config';
 import { ApiError, describeNetworkError } from '../http';
+import { isPrivateHostname } from '../net';
 import { categorize, isLowValueBlock, type LoadedSource, type SourceBlock } from './types';
 
 const UA =
@@ -36,7 +37,13 @@ function decodeEntities(input: string): string {
     if (body.startsWith('#')) {
       const isHex = body[1] === 'x' || body[1] === 'X';
       const code = Number.parseInt(isHex ? body.slice(2) : body.slice(1), isHex ? 16 : 10);
-      return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : whole;
+      /*
+       * 必须卡上界：String.fromCodePoint 对超出 Unicode 范围的码点会抛 RangeError。
+       * 网页里一个手滑（或故意）的 `&#1114112;` 就足以让整页解析崩成 500，
+       * 而这跟内容本身毫无关系。越界就原样保留，交给后面的正则清洗。
+       */
+      const valid = Number.isFinite(code) && code > 0 && code <= 0x10ffff;
+      return valid ? String.fromCodePoint(code) : whole;
     }
     return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
   });
@@ -79,18 +86,7 @@ function extractTitle(html: string, fallback: string): string {
 
 /** 拒绝内网地址，避免被当成 SSRF 跳板 */
 function assertPublicHost(url: URL): void {
-  const host = url.hostname.toLowerCase();
-  const blocked =
-    host === 'localhost' ||
-    host === '::1' ||
-    host.endsWith('.local') ||
-    host.endsWith('.internal') ||
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host);
-  if (blocked) {
+  if (isPrivateHostname(url.hostname)) {
     throw new ApiError(400, '出于安全考虑，不允许抓取内网或本机地址');
   }
 }
@@ -171,6 +167,53 @@ export function chunkDocument(text: string, docTitle: string): SourceBlock[] {
   return blocks;
 }
 
+/**
+ * 带上限的响应体读取。
+ *
+ * `await response.text()` 会把整个响应吞进内存 —— 对一个「用户随便给 URL」的
+ * 公开服务来说，一个几百 MB 的响应就足以把进程内存打满。这里流式读并在超限时
+ * 主动断开，只保留前 N 字节。
+ */
+async function readCapped(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body) return '';
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.byteLength === 0) continue;
+
+    if (total + value.byteLength > maxBytes) {
+      chunks.push(value.subarray(0, Math.max(0, maxBytes - total)));
+      total = maxBytes;
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+
+  // 提前 break 时必须显式取消，否则连接会挂在那里直到超时
+  if (total >= maxBytes) {
+    try {
+      await reader.cancel();
+    } catch {
+      /* 流已关闭 */
+    }
+  }
+
+  const merged = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  // fatal: false —— 截断处可能劈开一个多字节字符，用替换符兜住而不是抛错
+  return new TextDecoder('utf-8', { fatal: false }).decode(merged);
+}
+
 export async function loadWeb(rawUrl: string): Promise<LoadedSource> {
   let url: URL;
   try {
@@ -204,7 +247,7 @@ export async function loadWeb(rawUrl: string): Promise<LoadedSource> {
   }
 
   const contentType = response.headers.get('content-type') ?? '';
-  const raw = await response.text();
+  const raw = await readCapped(response, limits.maxHtmlBytes);
 
   const isHtml = /html|xml/i.test(contentType) || /^\s*<(!doctype|html)/i.test(raw);
   const text = isHtml ? htmlToText(raw) : raw.trim();
