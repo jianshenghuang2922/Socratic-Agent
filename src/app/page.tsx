@@ -87,6 +87,7 @@ export default function Page() {
               mode={s.mode}
               questionType={s.questionType}
               busy={s.busy}
+              liveTrace={s.liveTrace}
               onChoiceSubmit={s.submitChoice}
               onShortSubmit={s.submitShort}
               onHint={s.requestHint}

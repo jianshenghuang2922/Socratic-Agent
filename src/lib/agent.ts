@@ -9,6 +9,8 @@ import type {
   Question,
   ShortGrade,
   ShortQuestion,
+  TraceEvent,
+  TraceHandler,
   UrlContext,
 } from './types';
 
@@ -26,6 +28,8 @@ interface ContextResponse {
 /** 流式失败但已经吐过字时挂上这个标记：此时不能悄悄退回一次性接口，否则内容会重复 */
 interface StreamFailure extends Error {
   emitted?: boolean;
+  /** 服务端标记「这次失败值得换一批资料重试」（如出题自检没过），与网络类失败区分开 */
+  retryable?: boolean;
 }
 
 /** 服务端明确返回过状态码的失败（区别于网络中断 / 流被掐断） */
@@ -38,14 +42,23 @@ interface AgentHttpError extends Error {
  *
  * 后端接口（均为 POST，JSON，统一返回 { error } 作为失败体）：
  *   POST /api/agent/context      { url }                              -> { contextId, url, kind, title, summary }
- *   POST /api/agent/ask          { contextId, question, history }     -> { answer, sources, expanded }
- *   POST /api/agent/ask/stream   { contextId, question, history }     -> SSE（sources / delta / done / error）
- *   POST /api/agent/question     { contextId, mode, history }         -> ChoiceQuestion | ShortQuestion
- *   POST /api/agent/grade        { contextId, type, questionId, ... } -> ChoiceGrade | ShortGrade
+ *   POST /api/agent/ask/stream   { contextId, question, history }     -> SSE
+ *     { contextId, mode, history }                                    -> SSE（出题）
+ *     { contextId, action:'question' | 'hint' | 'grade', ... }        -> SSE
+ *   POST /api/agent/ask          { contextId, question, history }     -> { answer, sources, expanded }（流式不可用时的退路）
+ *   POST /api/agent/question     { contextId, mode, history }         -> ChoiceQuestion | ShortQuestion（同上）
+ *   POST /api/agent/hint         { contextId, type, questionId }      -> { hint }（同上）
+ *
+ * 注：`POST /api/agent/grade` 仍保留（对外契约不变），但客户端已不再使用 ——
+ * 判分统一走流式，否则思考轨迹无从下发。详见 gradeChoice 的说明。
  *
  * 关键设计：contextId 由 initContext 拿到后**存在客户端实例内部**，
  * 后续每次请求自动带上。这样 AgentClient 接口不用为「会话 id」开洞，
  * 页面层完全无感知。正确答案始终留在服务端，前端只能拿到题干。
+ *
+ * 为什么所有动作都优先走 SSE：用户等待时最想看的是思考过程，
+ * 而思考只存在于生成过程中。一次性接口只能等到最后给个结果，
+ * 中间几十秒完全是黑盒。SSE 换来的不只是流式正文，还有逐步下发的思考轨迹。
  */
 export class HttpAgentClient implements AgentClient {
   private contextId: string | null = null;
@@ -104,16 +117,117 @@ export class HttpAgentClient implements AgentClient {
     return { url: r.url, title: r.title, summary: r.summary, size: r.size, chunks: r.chunks };
   }
 
+  /**
+   * SSE 读取器 —— 所有动作共用一个消费循环。
+   *
+   * 事件类型：trace（思考轨迹）/ sources / delta / result（结构化结果）/ error。
+   * 之所以不做成「每种动作一个解析函数」，是因为协议本身是同一套；
+   * 分成三份只会让「trace 忘了转发」这类 bug 有机会藏在某一份里。
+   */
+  private async streamRequest<T>(
+    body: Record<string, unknown>,
+    handlers: {
+      onDelta?: (delta: string) => void;
+      onTrace?: TraceHandler;
+    },
+  ): Promise<{ result: T | null; sources?: string[]; answer: string }> {
+    const res = await fetch(`${this.baseUrl}/api/agent/ask/stream`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) throw await this.toError(res);
+    if (!res.body) throw new Error('服务端没有返回流式响应体');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let answer = '';
+    let sources: string[] | undefined;
+    let result: T | null = null;
+    let streamError: string | null = null;
+    let retryable = false;
+    let emitted = false;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE 事件以空行分隔
+      let sep: number;
+      while ((sep = buffer.indexOf('\n\n')) >= 0) {
+        const rawEvent = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+
+        const line = rawEvent.split('\n').find((l) => l.startsWith('data:'));
+        if (!line) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+
+        let evt: {
+          type?: string;
+          text?: string;
+          stage?: string;
+          detail?: string;
+          sources?: string[];
+          result?: T;
+          error?: string;
+          retryable?: boolean;
+        };
+        try {
+          evt = JSON.parse(payload) as typeof evt;
+        } catch {
+          continue;
+        }
+
+        if (evt.type === 'trace' && typeof evt.detail === 'string') {
+          // 轨迹是体验增强，回调抛错绝不能拖垮整条流
+          try {
+            handlers.onTrace?.({ stage: evt.stage ?? '思考', detail: evt.detail });
+          } catch {
+            /* 忽略渲染侧异常 */
+          }
+        } else if (evt.type === 'sources') sources = evt.sources ?? [];
+        else if (evt.type === 'delta' && typeof evt.text === 'string') {
+          answer += evt.text;
+          emitted = true;
+          handlers.onDelta?.(evt.text);
+        } else if (evt.type === 'result' && evt.result !== undefined) {
+          result = evt.result;
+        } else if (evt.type === 'error') {
+          streamError = evt.error ?? '上游返回了未知错误';
+          retryable = evt.retryable === true;
+        }
+      }
+    }
+
+    if (streamError) {
+      const err = new Error(streamError) as StreamFailure;
+      // emitted：已经吐过字就不能悄悄重来。retryable：服务端自检类失败可换一批资料重试
+      err.emitted = emitted;
+      err.retryable = retryable;
+      throw err;
+    }
+
+    return { result, sources, answer };
+  }
+
   async ask(
     question: string,
     history: ChatMessage[],
     onDelta?: (delta: string) => void,
+    onTrace?: TraceHandler,
   ): Promise<AskResult> {
     const body = { contextId: this.session(), question, history };
 
-    if (onDelta) {
+    // 有 onDelta 或 onTrace 之一就必须走流式 —— 轨迹只在流里有
+    if (onDelta || onTrace) {
       try {
-        return await this.streamAsk(body, onDelta);
+        const { answer, sources } = await this.streamRequest<never>(body, { onDelta, onTrace });
+        if (!answer.trim()) throw new Error('模型没有返回任何内容，请重试');
+        return { answer, sources };
       } catch (err) {
         const failure = err as StreamFailure & AgentHttpError;
         // 已经渲染了部分正文就不能重来 —— 重放会把内容接成两段
@@ -136,115 +250,148 @@ export class HttpAgentClient implements AgentClient {
     return { answer: r.answer, sources: r.sources, expanded: r.expanded };
   }
 
-  /** SSE 消费：把 sources / delta / error 事件还原成一次回答 */
-  private async streamAsk(
-    body: unknown,
-    onDelta: (delta: string) => void,
-  ): Promise<AskResult> {
-    const res = await fetch(`${this.baseUrl}/api/agent/ask/stream`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify(body),
-    });
+  /** 出题：一次尝试。自检类失败（重复 / 不够具体）标记为可重试，由调用方换资料再来一次 */
+  private async fetchQuestion(
+    mode: 'choice' | 'short',
+    history: ChatMessage[],
+    attempt: number,
+    onTrace?: TraceHandler,
+  ): Promise<ChoiceQuestion | ShortQuestion> {
+    const body = {
+      contextId: this.session(),
+      action: 'question',
+      mode,
+      history,
+      attempt,
+    };
+    const { result } = await this.streamRequest<ChoiceQuestion | ShortQuestion>(body, { onTrace });
+    if (!result) throw new Error('服务端没有返回题目');
+    return result;
+  }
 
-    if (!res.ok) throw await this.toError(res);
-    if (!res.body) throw new Error('服务端没有返回流式响应体');
+  async nextChoiceQuestion(history: ChatMessage[], onTrace?: TraceHandler): Promise<ChoiceQuestion> {
+    const q = await this.fetchQuestion('choice', history, 0, onTrace);
+    return q as ChoiceQuestion;
+  }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let answer = '';
-    let sources: string[] | undefined;
-    let streamError: string | null = null;
-    let emitted = false;
+  async nextShortQuestion(history: ChatMessage[], onTrace?: TraceHandler): Promise<ShortQuestion> {
+    const q = await this.fetchQuestion('short', history, 0, onTrace);
+    return q as ShortQuestion;
+  }
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+  /** 出题时上游允许的最大尝试次数，与 /api/agent/ask/stream 的 MAX_QUESTION_ATTEMPTS 一致 */
+  static readonly MAX_QUESTION_ATTEMPTS = 3;
+  /** 换一批资料拉开距离用的步长，同样与服务端约定 */
+  private retryStep = 3;
 
-      // SSE 事件以空行分隔
-      let sep: number;
-      while ((sep = buffer.indexOf('\n\n')) >= 0) {
-        const rawEvent = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-
-        const line = rawEvent.split('\n').find((l) => l.startsWith('data:'));
-        if (!line) continue;
-        const payload = line.slice(5).trim();
-        if (!payload) continue;
-
-        let evt: { type?: string; text?: string; sources?: string[]; error?: string };
-        try {
-          evt = JSON.parse(payload) as typeof evt;
-        } catch {
-          continue;
-        }
-
-        if (evt.type === 'sources') sources = evt.sources ?? [];
-        else if (evt.type === 'delta' && typeof evt.text === 'string') {
-          answer += evt.text;
-          emitted = true;
-          onDelta(evt.text);
-        } else if (evt.type === 'error') streamError = evt.error ?? '上游返回了未知错误';
+  /**
+   * 出题重试：服务端只跑一次尝试，循环放在这里。
+   *
+   * 把循环放在前端是为了**等待的可见性** —— 每轮都能先把「上一版为什么不合格」
+   * 讲给用户听，等待被切成看得懂的段落；放在服务端则是一个静默转圈几十秒的黑盒。
+   * 轮次参数（attempt）决定了服务端换哪一批资料采样。
+   *
+   * 不写成泛型：泛型方法在「接口 + 两种实现」的联合类型下互不兼容，
+   * 调用点会直接报 not callable。用返回联合类型的宽签名，调用方各自收窄即可。
+   */
+  async nextQuestionWithRetry(
+    mode: 'choice' | 'short',
+    history: ChatMessage[],
+    onTrace?: TraceHandler,
+  ): Promise<ChoiceQuestion | ShortQuestion> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < HttpAgentClient.MAX_QUESTION_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.fetchQuestion(mode, history, attempt, onTrace);
+      } catch (err) {
+        lastError = err;
+        const failure = err as StreamFailure;
+        // 只有服务端明确说了「可重试」才继续；会话失效、网关故障重试没有意义
+        if (!failure.retryable) throw err;
       }
     }
-
-    if (streamError) {
-      const err = new Error(streamError) as StreamFailure;
-      err.emitted = emitted;
-      throw err;
-    }
-    if (!answer.trim()) throw new Error('模型没有返回任何内容，请重试');
-
-    return { answer, sources };
+    throw lastError;
   }
 
-  nextChoiceQuestion(history: ChatMessage[]): Promise<ChoiceQuestion> {
-    return this.post<ChoiceQuestion>('/api/agent/question', {
-      contextId: this.session(),
-      mode: 'choice',
-      history,
-    });
+  /**
+   * 选择题判分。
+   *
+   * 走流式而不是一次性接口 —— 不是为了流式正文（判分没有正文），
+   * 而是**一次性接口结构上就发不出思考轨迹**：它只有最后一个 JSON，
+   * 中间步骤全部被吞在服务端。判分本身是零延迟的服务端比对，
+   * 但走流式让「判分依据」这条轨迹能被下发与归档，
+   * 也让判分与简答题共用同一条管道（少一条会各自漂移的重复实现）。
+   */
+  gradeChoice(
+    question: ChoiceQuestion,
+    selectedIndex: number,
+    onTrace?: TraceHandler,
+  ): Promise<ChoiceGrade> {
+    return this.gradeChoiceStream(question, selectedIndex, onTrace);
   }
 
-  nextShortQuestion(history: ChatMessage[]): Promise<ShortQuestion> {
-    return this.post<ShortQuestion>('/api/agent/question', {
-      contextId: this.session(),
-      mode: 'short',
-      history,
-    });
+  private async gradeChoiceStream(
+    question: ChoiceQuestion,
+    selectedIndex: number,
+    onTrace?: TraceHandler,
+  ): Promise<ChoiceGrade> {
+    const { result } = await this.streamRequest<ChoiceGrade>(
+      {
+        contextId: this.session(),
+        action: 'grade',
+        type: 'choice',
+        questionId: question.id,
+        selectedIndex,
+      },
+      { onTrace },
+    );
+    if (!result) throw new Error('服务端没有返回判分结果');
+    return result;
   }
 
-  gradeChoice(question: ChoiceQuestion, selectedIndex: number): Promise<ChoiceGrade> {
-    return this.post<ChoiceGrade>('/api/agent/grade', {
-      contextId: this.session(),
-      type: 'choice',
-      questionId: question.id,
-      selectedIndex,
-    });
+  gradeShort(
+    question: ShortQuestion,
+    answer: string,
+    onTrace?: TraceHandler,
+  ): Promise<ShortGrade> {
+    return this.gradeShortStream(question, answer, onTrace);
   }
 
-  gradeShort(question: ShortQuestion, answer: string): Promise<ShortGrade> {
-    return this.post<ShortGrade>('/api/agent/grade', {
-      contextId: this.session(),
-      type: 'short',
-      questionId: question.id,
-      // 题干要带上：模型批改时需要知道问了什么
-      question: { id: question.id, prompt: question.prompt },
-      answer,
-    });
+  private async gradeShortStream(
+    question: ShortQuestion,
+    answer: string,
+    onTrace?: TraceHandler,
+  ): Promise<ShortGrade> {
+    const { result } = await this.streamRequest<ShortGrade>(
+      {
+        contextId: this.session(),
+        action: 'grade',
+        type: 'short',
+        questionId: question.id,
+        // 题干要带上：模型批改时需要知道问了什么
+        question: { id: question.id, prompt: question.prompt },
+        answer,
+      },
+      { onTrace },
+    );
+    if (!result) throw new Error('服务端没有返回判分结果');
+    return result;
   }
 
   /** 卡住时的提示：只拿回引导文案，不改动本地作答状态 */
-  async requestHint(question: Question): Promise<string> {
-    const r = await this.post<{ hint: string }>('/api/agent/hint', {
-      contextId: this.session(),
-      type: question.type,
-      questionId: question.id,
-      question: { id: question.id, prompt: question.prompt },
-    });
-    return r.hint;
+  async requestHint(question: Question, onTrace?: TraceHandler): Promise<string> {
+    const { result } = await this.streamRequest<{ hint: string }>(
+      {
+        contextId: this.session(),
+        action: 'hint',
+        type: question.type,
+        questionId: question.id,
+        question: { id: question.id, prompt: question.prompt },
+      },
+      { onTrace },
+    );
+    if (!result?.hint) throw new Error('服务端没有返回提示');
+    return result.hint;
   }
 }
 
@@ -275,10 +422,13 @@ export function resolveAgentMode(): AgentMode {
   return 'http';
 }
 
-let cached: { mode: AgentMode; client: AgentClient } | null = null;
+let cached: { mode: AgentMode; client: HttpAgentClient | MockAgentClient } | null = null;
 
-/** 获取当前模式下的 Agent 客户端实例（模式变了会自动换） */
-export function getAgentClient(): AgentClient {
+/**
+ * 获取当前模式下的 Agent 客户端实例（模式变了会自动换）。
+ * 返回具体类而非接口，纯粹是为了让回归脚本能调用 nextQuestionWithRetry。
+ */
+export function getAgentClient(): HttpAgentClient | MockAgentClient {
   const mode = resolveAgentMode();
   if (cached && cached.mode === mode) return cached.client;
   cached = { mode, client: mode === 'http' ? new HttpAgentClient() : new MockAgentClient() };

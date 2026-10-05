@@ -1,5 +1,6 @@
 import { RichText } from './RichText';
 import { SourceList } from './SourceList';
+import { ThinkingPanel } from './ThinkingPanel';
 import type { ChatMessage } from '@/lib/types';
 
 const ROLE_LABEL: Record<ChatMessage['role'], string> = {
@@ -18,6 +19,8 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
       </div>
       <div className="bubble-group">
         <div className="bubble-meta">{ROLE_LABEL[message.role]}</div>
+        {/* 历史消息里的思考过程默认折叠成一行，点开可回看「这回答是怎么来的」 */}
+        {!isUser && <ThinkingPanel steps={message.trace ?? []} />}
         <div className={`bubble ${isUser ? 'bubble--user' : 'bubble--agent'}`}>
           <RichText text={message.content} />
         </div>

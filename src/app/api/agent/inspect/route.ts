@@ -85,7 +85,7 @@ export async function POST(req: Request) {
     const rawHits = index.search(body.query, limits.maxChunks);
 
     // expand=false 时只看纯 BM25，用于对比
-    const terms = body.expand === false ? [] : await expandQuery(ctx, body.query);
+    const terms = body.expand === false ? [] : (await expandQuery(ctx, body.query)).terms;
     const hits = searchWithExpansion(index, body.query, terms, limits.maxChunks);
 
     const brief = (list: typeof hits) =>

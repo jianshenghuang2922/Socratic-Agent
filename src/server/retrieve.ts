@@ -82,6 +82,21 @@ function latinTokens(raw: string): string[] {
  * - 拉丁/数字：按 camelCase、snake_case 拆词，并保留完整标识符
  * - 中文：先按虚词切段，再对每段取二元组（单字段保留原字）
  */
+/**
+ * 只抽拉丁/数字标识符词元（文件名、函数名、配置项）。
+ *
+ * 为什么单独开一个出口：判断「两道题是不是同一个知识点」时，
+ * 中文句式是最强的噪声 —— 同一批资料出的题天然共用模板
+ * （「在 X 中，Y 的主要职责是什么？」），拿整句算重合率，
+ * 两道考不同函数的题也会被判成重复。而代码仓库里的知识点
+ * 几乎都落在标识符上，只比标识符就能把两类干净分开。
+ */
+export function tokenizeIdentifiers(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.match(/[A-Za-z0-9_$]+/g) ?? []) out.push(...latinTokens(raw));
+  return out;
+}
+
 export function tokenize(text: string): string[] {
   const out: string[] = [];
 
@@ -318,19 +333,28 @@ export function rrf(
 /**
  * 带查询扩展的检索：原始查询与扩展词各搜一遍，再按排名融合。
  * 没有扩展词时退化为单次 BM25。
+ *
+ * `onFused` 是给思考轨迹用的回调 —— 融合**之后**才知道谁是第一，
+ * 这时候告诉用户「命中了什么、有多强」才不是瞎猜。
+ * 它是纯观察者：不参与排序，抛出异常也只影响轨迹、不影响检索结果。
  */
 export function searchWithExpansion(
   index: BM25Index,
   query: string,
   terms: string[],
   topK: number,
+  onFused?: (result: { fused: ScoredDoc[]; fromTerms: number; fromQuery: number }) => void,
 ): ScoredDoc[] {
-  if (terms.length === 0) return index.search(query, topK);
+  if (terms.length === 0) {
+    const hits = index.search(query, topK);
+    onFused?.({ fused: hits, fromTerms: 0, fromQuery: hits.length });
+    return hits;
+  }
 
   const fromQuery = index.search(query, topK * 2);
   const fromTerms = index.search(terms.join(' '), topK * 2);
 
-  return rrf(
+  const fused = rrf(
     [
       // 扩展词是项目里真实存在的标识符，权重更高
       { hits: fromTerms, weight: 1 },
@@ -339,6 +363,9 @@ export function searchWithExpansion(
     ],
     topK,
   );
+
+  onFused?.({ fused, fromTerms: fromTerms.length, fromQuery: fromQuery.length });
+  return fused;
 }
 
 /* ------------------------------------------------------------------ */

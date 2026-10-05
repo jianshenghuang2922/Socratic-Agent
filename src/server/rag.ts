@@ -13,9 +13,17 @@
 
 import { limits, type LlmOverride } from './config';
 import { expandQuery } from './expand';
-import { assembleContext, pickWindow, searchWithExpansion } from './retrieve';
+import { assembleContext, pickWindow, searchWithExpansion, type ScoredDoc } from './retrieve';
 import { getIndex, weakSpots, type Interaction, type StoredContext } from './store';
+import { emitTrace, scoreLabel, shortenLabel, type TraceSink } from './trace';
 import type { SourceBlock } from './sources/types';
+
+/** 检索融合结果的观察者载荷 */
+interface FusionReport {
+  fused: ScoredDoc[];
+  fromTerms: number;
+  fromQuery: number;
+}
 
 export interface RagBundle {
   /** 拼好的上下文，直接进 prompt */
@@ -65,34 +73,67 @@ export function sampleBlocks(blocks: SourceBlock[], round: number, count: number
 /**
  * 提问模式的召回。
  * 索引里同时有项目内容和用户历史，所以「我刚才答错的那题考的是什么」也能命中。
+ *
+ * 这里也是思考轨迹信息最密集的一段：查询扩展要调一次模型（数秒），
+ * 检索决定了回答的依据。两者现在都讲给用户听。
  */
 export async function contextForAsk(
   ctx: StoredContext,
   question: string,
   recentUserTurns: string[] = [],
   override?: LlmOverride,
+  trace?: TraceSink,
 ): Promise<RagBundle> {
   const index = getIndex(ctx);
   const raw = expandShortQuestion(question, recentUserTurns);
 
+  if (raw !== question) {
+    emitTrace(trace, '检索', `提问较短，已拼接上一轮问题补全语义：${shortenLabel(raw, 60)}`);
+  }
+
   // 中文提问先做一次标识符映射，否则召不回英文代码
-  const terms = await expandQuery(ctx, raw, override);
-  const hits = searchWithExpansion(index, raw, terms, limits.maxChunks);
+  emitTrace(trace, '检索', `正在把提问映射到该项目真实存在的标识符（${ctx.blocks.length} 个资料块中检索）…`);
+  const expansion = await expandQuery(ctx, raw, override);
+  emitTrace(trace, '检索', expansion.reason);
+
+  // TS 的控制流分析会认为回调「不一定执行」，于是把 fused 收窄成 never；
+  // 用可变对象承接就能绕开这个误判。
+  const report: { value: FusionReport | null } = { value: null };
+  const hits = searchWithExpansion(index, raw, expansion.terms, limits.maxChunks, (result) => {
+    report.value = result;
+  });
 
   if (hits.length === 0) {
+    emitTrace(
+      trace,
+      '检索',
+      `没有召回到任何相关内容，退回按项目开头取材（回答将缺少针对性依据）。`,
+    );
     return {
       text: pickWindow(ctx.content, 0, limits.answerBudgetChars),
       sources: [],
       retrieved: false,
-      expanded: terms,
+      expanded: expansion.terms,
     };
   }
+
+  const top = hits[0];
+  const fusion = report.value;
+  emitTrace(
+    trace,
+    '检索',
+    `召回 ${hits.length} 个资料块${
+      fusion && fusion.fromTerms > 0
+        ? `（标识符检索 ${fusion.fromTerms} 命中，原始提问 ${fusion.fromQuery} 命中，按排名融合）`
+        : ''
+    }；最相关的是「${shortenLabel(top.label)}」（${scoreLabel(top.score)}）。`,
+  );
 
   return {
     text: assembleContext(hits, limits.answerBudgetChars),
     sources: hits.map((h) => h.label),
     retrieved: true,
-    expanded: terms,
+    expanded: expansion.terms,
   };
 }
 
@@ -124,6 +165,7 @@ export async function contextForQuestion(
   ctx: StoredContext,
   round: number,
   override?: LlmOverride,
+  trace?: TraceSink,
 ): Promise<QuestionContext> {
   const index = getIndex(ctx);
   const focus = weakSpots(ctx, 3);
@@ -133,9 +175,19 @@ export async function contextForQuestion(
 
   // 1) 薄弱点回捞：每个薄弱点取最相关的 2 块
   if (focus.length > 0) {
+    // 出题针对的是他的薄弱环节 —— 这件事必须说出来，
+    // 否则用户会觉得题目是随机蹦出来的
+    emitTrace(
+      trace,
+      '出题',
+      `先回捞你之前的 ${focus.length} 个薄弱点：${focus
+        .map((f) => shortenLabel(f.prompt, 34))
+        .join('；')}`,
+    );
     // 薄弱点题干同样是中文，一次性做扩展
     const focusText = focus.map((f) => `${f.prompt} ${f.knowledge}`).join(' ');
-    expanded = await expandQuery(ctx, focusText, override);
+    const expansion = await expandQuery(ctx, focusText, override);
+    expanded = expansion.terms;
 
     for (const it of focus) {
       const hits = searchWithExpansion(index, `${it.prompt} ${it.knowledge}`, expanded, 2);
@@ -144,15 +196,24 @@ export async function contextForQuestion(
         picked.push({ label: hit.label, text: hit.text, score: hit.score + 1000 });
       }
     }
+  } else {
+    emitTrace(trace, '出题', '还没有历史错题可参考，本轮完全按项目内容均匀取材。');
   }
 
   // 2) 全项目均匀采样，保证覆盖面
-  for (const b of sampleBlocks(ctx.blocks, round, 6)) {
+  const sampled = sampleBlocks(ctx.blocks, round, 6);
+  for (const b of sampled) {
     picked.push({ label: b.label, text: b.text, score: 0 });
   }
+  emitTrace(
+    trace,
+    '出题',
+    `跨全项目均匀采样 ${sampled.length} 个资料块（第 ${round + 1} 轮，起点已错开，避免反复考同一段）。`,
+  );
 
   const unique = dedupeByLabel(picked);
   if (unique.length === 0) {
+    emitTrace(trace, '出题', '没有可取用的资料块，退回按正文窗口取材。');
     return {
       text: pickWindow(ctx.content, round, limits.contextBudgetChars),
       sources: [],
@@ -161,6 +222,12 @@ export async function contextForQuestion(
       expanded,
     };
   }
+
+  emitTrace(
+    trace,
+    '出题',
+    `锁定 ${unique.length} 个资料块作为出题范围，最相关的是「${shortenLabel(unique[0].label)}」。`,
+  );
 
   return {
     text: assembleContext(unique, limits.contextBudgetChars),
@@ -174,8 +241,11 @@ export async function contextForQuestion(
 /**
  * 只取用户记忆里的内容（历史作答 + 提过的问题）。
  * 用来给提示词补一段「这个人之前的表现」，不占资料预算。
+ *
+ * `trace` 传入时会汇报这次有没有带上用户记忆 —— 「它记得我答错过什么」
+ * 是用户很难从回答正文里看出来的能力，讲出来才建立得起信任。
  */
-export function memoryDigest(ctx: StoredContext, limit = 8): string {
+export function memoryDigest(ctx: StoredContext, limit = 8, trace?: TraceSink): string {
   const lines: string[] = [];
 
   const weak = ctx.interactions.filter((it) => !it.correct).slice(-limit);
@@ -190,6 +260,16 @@ export function memoryDigest(ctx: StoredContext, limit = 8): string {
   if (strong.length > 0) {
     lines.push('【他已经答对的题】');
     for (const it of strong) lines.push(`- ${it.prompt}`);
+  }
+
+  const totalWeak = ctx.interactions.filter((it) => !it.correct).length;
+  const totalStrong = ctx.interactions.filter((it) => it.correct).length;
+  if (totalWeak + totalStrong > 0) {
+    emitTrace(
+      trace,
+      '检索',
+      `同时带上了你的历史表现作为参照：${totalWeak} 道错题、${totalStrong} 道已掌握。`,
+    );
   }
 
   return lines.join('\n');

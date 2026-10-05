@@ -12,6 +12,7 @@ import type {
   SessionPhase,
   ShortQuestion,
   StatusState,
+  TraceEvent,
   UrlContext,
 } from '@/lib/types';
 
@@ -44,6 +45,26 @@ export function useQASession() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<StatusState>({ kind: 'idle', text: '' });
   const [busy, setBusy] = useState(false);
+  /**
+   * 当前动作的思考轨迹。
+   *
+   * 生命周期刻意跟 `busy` 绑死：动作一结束就清空。
+   * 不把它留在 state 里等「有人来取」是因为那会引入一类很难发现的 bug ——
+   * 动作结束了但轨迹还挂着，面板就会显示一段早已结束的过程，
+   * 用户会以为 Agent 还在忙。收尾时各动作会先把它写进消息再清空。
+   */
+  const [liveTrace, setLiveTrace] = useState<TraceEvent[]>([]);
+
+  /** 收集本次动作的轨迹：既给实时面板用，也攒下来供收尾时归档到消息里 */
+  const makeTraceCollector = useCallback(() => {
+    const collected: TraceEvent[] = [];
+    setLiveTrace([]);
+    const onTrace = (event: TraceEvent) => {
+      collected.push(event);
+      setLiveTrace([...collected]);
+    };
+    return { onTrace, collected, clear: () => setLiveTrace([]) };
+  }, []);
 
   /* ---------------- 计分 ---------------- */
 
@@ -143,6 +164,7 @@ export function useQASession() {
     setTypeChosen(false);
     setStatus({ kind: 'idle', text: '' });
     setBusy(false);
+    setLiveTrace([]);
     // 换 URL = 开新会话，得分与题数一并归零
     setScore(0);
     setQuestionCount(0);
@@ -173,6 +195,7 @@ export function useQASession() {
       const answerId = uid('agent');
       /** 是否已经开始渲染正文（决定最后是「追加」还是「新建」气泡） */
       let started = false;
+      const { onTrace, collected, clear } = makeTraceCollector();
 
       push({ id: uid('user'), role: 'user', kind: 'text', content: question, ts: Date.now() });
       setBusy(true);
@@ -194,13 +217,15 @@ export function useQASession() {
       };
 
       try {
-        const result = await agent.ask(question, history, onDelta);
+        const result = await agent.ask(question, history, onDelta, onTrace);
+        // 轨迹归档到这条回答上：实时面板收起来之后，用户仍能点开回看
+        const trace = collected.length ? collected : undefined;
         if (started) {
-          // 流式已渲染：用最终结果校正内容，并补上来源标签
+          // 流式已渲染：用最终结果校正内容，并补上来源标签与思考过程
           setMessages((prev) =>
             prev.map((m) =>
               m.id === answerId && m.kind === 'text'
-                ? { ...m, content: result.answer, sources: result.sources }
+                ? { ...m, content: result.answer, sources: result.sources, trace }
                 : m,
             ),
           );
@@ -211,6 +236,7 @@ export function useQASession() {
             kind: 'text',
             content: result.answer,
             sources: result.sources,
+            trace,
             ts: Date.now(),
           });
         }
@@ -219,10 +245,11 @@ export function useQASession() {
         fail(err);
         return;
       } finally {
+        clear();
         setBusy(false);
       }
     },
-    [agent, busy, fail, messages, phase, push],
+    [agent, busy, fail, makeTraceCollector, messages, phase, push],
   );
 
   /* ---------------- 回答模式：出题 ---------------- */
@@ -233,24 +260,40 @@ export function useQASession() {
       generatingRef.current = true;
       setBusy(true);
       setStatus({ kind: 'thinking', text: 'Agent 正在出题…' });
+      const { onTrace, collected, clear } = makeTraceCollector();
       try {
         const history = messages;
+        /*
+         * 重试循环在前端（nextQuestionWithRetry），不在服务端：
+         * 服务端每轮只跑一次尝试，前端逐轮驱动 —— 这样每一轮都能先把
+         * 「上一版为什么不合格、我要换什么」讲给用户听。
+         * 原来的服务端循环是静默的，运气差时用户要对着转圈等三轮模型调用。
+         */
         const question: Question =
           type === 'choice'
-            ? await agent.nextChoiceQuestion(history)
-            : await agent.nextShortQuestion(history);
-        push({ id: uid('q'), role: 'agent', kind: 'question', question, ts: Date.now() });
+            ? await agent.nextQuestionWithRetry('choice', history, onTrace)
+            : await agent.nextQuestionWithRetry('short', history, onTrace);
+        push({
+          id: uid('q'),
+          role: 'agent',
+          kind: 'question',
+          question,
+          trace: collected.length ? collected : undefined,
+          ts: Date.now(),
+        });
         setQuestionCount((n) => n + 1);
         setStatus({ kind: 'success', text: '题目已生成' });
       } catch (err) {
+        // 出题失败时轨迹留在面板上没意义：题目都没生成，没有可展开的载体
         fail(err);
         return;
       } finally {
+        clear();
         generatingRef.current = false;
         setBusy(false);
       }
     },
-    [agent, fail, messages, phase, push, questionType],
+    [agent, fail, makeTraceCollector, messages, phase, push, questionType],
   );
 
   /* ---------------- 回答模式：作答与判分 ---------------- */
@@ -284,8 +327,9 @@ export function useQASession() {
 
       setBusy(true);
       setStatus({ kind: 'thinking', text: '正在判分…' });
+      const { onTrace, clear } = makeTraceCollector();
       try {
-        const grade = await agent.gradeChoice(question, selectedIndex);
+        const grade = await agent.gradeChoice(question, selectedIndex, onTrace);
         patchQuestion(messageId, {
           submitted: true,
           correctIndex: grade.correctIndex,
@@ -300,10 +344,11 @@ export function useQASession() {
         fail(err);
         return;
       } finally {
+        clear();
         setBusy(false);
       }
     },
-    [agent, award, fail, messages, patchQuestion, push],
+    [agent, award, fail, makeTraceCollector, messages, patchQuestion, push],
   );
 
   const submitShort = useCallback(
@@ -319,8 +364,9 @@ export function useQASession() {
 
       setBusy(true);
       setStatus({ kind: 'thinking', text: '正在批改…' });
+      const { onTrace, clear } = makeTraceCollector();
       try {
-        const grade = await agent.gradeShort(question, text);
+        const grade = await agent.gradeShort(question, text, onTrace);
         patchQuestion(messageId, {
           submitted: true,
           score: grade.score,
@@ -340,10 +386,11 @@ export function useQASession() {
         fail(err);
         return;
       } finally {
+        clear();
         setBusy(false);
       }
     },
-    [agent, award, fail, messages, patchQuestion, push],
+    [agent, award, fail, makeTraceCollector, messages, patchQuestion, push],
   );
 
   /**
@@ -361,18 +408,20 @@ export function useQASession() {
 
       setBusy(true);
       setStatus({ kind: 'thinking', text: '正在生成提示…' });
+      const { onTrace, clear } = makeTraceCollector();
       try {
-        const hint = await agent.requestHint(question);
+        const hint = await agent.requestHint(question, onTrace);
         patchQuestion(messageId, { hint });
         setStatus({ kind: 'success', text: '已给出提示 · 只引导思路，不替代作答' });
       } catch (err) {
         fail(err);
         return;
       } finally {
+        clear();
         setBusy(false);
       }
     },
-    [agent, fail, messages, patchQuestion],
+    [agent, fail, makeTraceCollector, messages, patchQuestion],
   );
 
   /* ---------------- 模式 / 题型切换 ---------------- */
@@ -456,6 +505,7 @@ export function useQASession() {
     messages,
     status,
     busy,
+    liveTrace,
     score,
     questionCount,
     pulsing,

@@ -7,6 +7,7 @@ import type {
   Question,
   ShortGrade,
   ShortQuestion,
+  TraceHandler,
   UrlContext,
 } from './types';
 import { CODE_HOSTS, isRepoUrl } from './urlKind';
@@ -16,9 +17,33 @@ import { CODE_HOSTS, isRepoUrl } from './urlKind';
  *
  * 后端（CodeBuddy Agent SDK + RAG）尚未接入，先用它把前端交互闭环跑通：
  * 具备真实的异步延迟、流式打字、错误注入能力，接口与 HttpAgentClient 完全一致。
+ *
+ * 它也**照常产出思考轨迹** —— 否则本地联调时思考面板永远是空的，
+ * 「面板有没有真的接上」这件事就没法在前端侧验证。
+ * 轨迹内容与真实后端同构（检索 → 生成），只是文案写成模拟态。
  */
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 按真实节奏逐条吐轨迹，让面板的「逐步出现」效果在 mock 下也能看到 */
+async function* mockTrace(
+  steps: { stage: string; detail: string }[],
+  gap = 320,
+): AsyncGenerator<{ stage: string; detail: string }> {
+  for (const step of steps) {
+    await sleep(gap);
+    yield step;
+  }
+}
+
+async function playTrace(
+  steps: { stage: string; detail: string }[],
+  onTrace?: TraceHandler,
+  gap = 320,
+): Promise<void> {
+  if (!onTrace) return;
+  for await (const step of mockTrace(steps, gap)) onTrace(step);
+}
 
 /** 从 URL 推断一个可读的标题，让 Mock 的反馈看起来是「基于该 URL」的 */
 function deriveTitle(url: string): string {
@@ -169,10 +194,22 @@ export class MockAgentClient implements AgentClient {
     question: string,
     _history: ChatMessage[],
     onDelta?: (delta: string) => void,
+    onTrace?: TraceHandler,
   ): Promise<AskResult> {
     void _history;
-    await sleep(900);
     const kb = this.lastWasRepo ? REPO_KNOWLEDGE : WEB_KNOWLEDGE;
+
+    await playTrace(
+      [
+        { stage: '检索', detail: `正在把提问映射到该项目真实存在的标识符（模拟）。` },
+        { stage: '检索', detail: `把中文概念映射到项目标识符：chunk / embedding / topK（模拟）。` },
+        { stage: '检索', detail: `召回 ${kb.facts.length} 个资料块，最相关的是「${kb.topic} › 段落 1」（高度相关）。` },
+        { stage: '生成', detail: '资料已就位，开始逐字作答…' },
+      ],
+      onTrace,
+    );
+
+    await sleep(400);
     const fact = kb.facts[Math.floor(Math.random() * kb.facts.length)];
     const answer = [
       `针对「${question}」的回答如下：`,
@@ -191,37 +228,102 @@ export class MockAgentClient implements AgentClient {
       }
     }
 
+    onTrace?.({ stage: '生成', detail: '回答完成。' });
     return { answer, sources: kb.facts.map((_, i) => `${kb.topic} › 段落 ${i + 1}`).slice(0, 3) };
   }
 
-  async nextChoiceQuestion(_history: ChatMessage[]): Promise<ChoiceQuestion> {
+  async nextChoiceQuestion(_history: ChatMessage[], onTrace?: TraceHandler): Promise<ChoiceQuestion> {
     void _history;
-    await sleep(1100);
+    await this.emitQuestionTrace('选择题', onTrace);
+    await sleep(400);
     const q = CHOICE_BANK[this.choiceCursor % CHOICE_BANK.length];
     this.choiceCursor += 1;
     return { type: 'choice', ...q, options: [...q.options] };
   }
 
-  async nextShortQuestion(_history: ChatMessage[]): Promise<ShortQuestion> {
+  async nextShortQuestion(_history: ChatMessage[], onTrace?: TraceHandler): Promise<ShortQuestion> {
     void _history;
-    await sleep(1100);
+    await this.emitQuestionTrace('简答题', onTrace);
+    await sleep(400);
     const q = SHORT_BANK[this.shortCursor % SHORT_BANK.length];
     this.shortCursor += 1;
     return { type: 'short', ...q };
   }
 
-  async gradeChoice(question: ChoiceQuestion, selectedIndex: number): Promise<ChoiceGrade> {
-    await sleep(800);
+  private async emitQuestionTrace(type: string, onTrace?: TraceHandler): Promise<void> {
+    await playTrace(
+      [
+        { stage: '出题', detail: '还没有历史错题可参考，本轮完全按项目内容均匀取材（模拟）。' },
+        { stage: '出题', detail: '跨全项目均匀采样 6 个资料块（第 1 轮，起点已错开）。' },
+        { stage: '出题', detail: `正在让模型按资料出题（题型：${type}，第 1 版）。` },
+        { stage: '出题', detail: '自检通过：题干锚定了资料中的具体名称，与历史题目也不重复。' },
+        { stage: '出题', detail: '题目已生成，正确答案已锁在服务端（前端拿不到，无法作弊）。' },
+      ],
+      onTrace,
+    );
+  }
+
+  /**
+   * 出题重试：与 HttpAgentClient 同形，但 mock 从不「自检失败」。
+   * 保留这个方法是为了让 hook 只依赖一种调用方式，
+   * 不必在两条实现之间分叉重试逻辑。
+   *
+   * 刻意用非泛型的宽签名（返回联合类型），与 HttpAgentClient 保持一致 ——
+   * 两个来源的泛型方法在联合类型下互不兼容，hook 里会直接报「not callable」。
+   */
+  nextQuestionWithRetry(
+    mode: 'choice' | 'short',
+    history: ChatMessage[],
+    onTrace?: TraceHandler,
+  ): Promise<ChoiceQuestion | ShortQuestion> {
+    void history;
+    return mode === 'choice'
+      ? this.nextChoiceQuestion([], onTrace)
+      : this.nextShortQuestion([], onTrace);
+  }
+
+  async gradeChoice(
+    question: ChoiceQuestion,
+    selectedIndex: number,
+    onTrace?: TraceHandler,
+  ): Promise<ChoiceGrade> {
+    await playTrace(
+      [{ stage: '判分', detail: '选择题由服务端直接比对答案，无需调用模型（零延迟、判定确定）。' }],
+      onTrace,
+      200,
+    );
+    await sleep(600);
     const correctIndex = question.correctIndex ?? 0;
+    const correct = selectedIndex === correctIndex;
+    onTrace?.({
+      stage: '判分',
+      detail: correct
+        ? '比对你的选择与答案键：一致，判定为正确。'
+        : `比对你的选择与答案键：不一致，判定为错误，正确答案是 ${String.fromCharCode(
+            65 + correctIndex,
+          )}。`,
+    });
     return {
-      correct: selectedIndex === correctIndex,
+      correct,
       correctIndex,
       explanation: question.explanation ?? '',
     };
   }
 
-  async gradeShort(question: ShortQuestion, answer: string): Promise<ShortGrade> {
-    await sleep(900);
+  async gradeShort(
+    question: ShortQuestion,
+    answer: string,
+    onTrace?: TraceHandler,
+  ): Promise<ShortGrade> {
+    await playTrace(
+      [
+        { stage: '判分', detail: '正在按参考答案拆解采分点，再逐条核对你答到了哪些（模拟）。' },
+        { stage: '检索', detail: '召回 2 个资料块用于核对要点（模拟）。' },
+      ],
+      onTrace,
+      240,
+    );
+    await sleep(500);
     const reference = question.reference ?? '';
     const score = roughScore(answer, reference);
     const feedback =
@@ -234,6 +336,8 @@ export class MockAgentClient implements AgentClient {
             : score >= 1
               ? '只答到了一两个要点，建议对照参考答案补齐。'
               : '作答与参考答案的关键要点不符，建议重新组织。';
+    onTrace?.({ stage: '判分', detail: `采分点覆盖度核算完毕：得 ${score} / 5 分。` });
+    onTrace?.({ stage: '判分', detail: '这次作答已记入你的学习档案，后续出题会针对薄弱点换角度再问。' });
     return { score, feedback, reference };
   }
 
@@ -241,10 +345,21 @@ export class MockAgentClient implements AgentClient {
    * 提示：只给思路，不给答案。
    * Mock 下没法真的读题干，给一句通用的启发式引导，保证前端链路能跑通。
    */
-  async requestHint(question: Question): Promise<string> {
-    await sleep(700);
-    return question.type === 'choice'
-      ? '先别急着排除选项：回到资料里确认这一步真正的职责是什么，再逐项对照 —— 与职责对得上的那个选项，描述里往往会出现资料原文中的关键词。'
-      : '试着先想清楚「它一共做了哪几件事」，再按先后顺序把它们串起来；对照资料原文逐个核对，别漏掉中间那一步。';
+  async requestHint(question: Question, onTrace?: TraceHandler): Promise<string> {
+    await playTrace(
+      [
+        { stage: '提示', detail: '正在取回这道题的答案要点，用来判断引导方向（不会直接告诉你答案）。' },
+        { stage: '提示', detail: '正在生成引导：只指思路方向，划死线不给答案、不排除到只剩一个。' },
+      ],
+      onTrace,
+      280,
+    );
+    await sleep(400);
+    const hint =
+      question.type === 'choice'
+        ? '先别急着排除选项：回到资料里确认这一步真正的职责是什么，再逐项对照 —— 与职责对得上的那个选项，描述里往往会出现资料原文中的关键词。'
+        : '试着先想清楚「它一共做了哪几件事」，再按先后顺序把它们串起来；对照资料原文逐个核对，别漏掉中间那一步。';
+    onTrace?.({ stage: '提示', detail: '引导已就绪（仅启发思路，作答状态与计分不受影响）。' });
+    return hint;
   }
 }
