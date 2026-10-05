@@ -109,6 +109,13 @@ export const limits = {
    * 因此改为代码内常量。
    */
   cloneTimeoutMs: 180_000,
+  /**
+   * 克隆期间「还在动」心跳的间隔。
+   * `git clone` 期间拿不到任何进度，而超时上限有 180s —— 不报点东西，
+   * 用户无法判断是卡死了还是在下载。正常无需改；调小只是为了能在回归里
+   * 验证心跳真的会发（不然得等一次 8s 以上的克隆）。
+   */
+  cloneHeartbeatMs: int('CLONE_HEARTBEAT_SECONDS', 8) * 1000,
   /** 抓取网页的超时 */
   fetchTimeoutMs: 20_000,
   /**

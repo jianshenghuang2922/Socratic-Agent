@@ -41,7 +41,8 @@ interface AgentHttpError extends Error {
  * HttpAgentClient —— 对接真实后端的实现。
  *
  * 后端接口（均为 POST，JSON，统一返回 { error } 作为失败体）：
- *   POST /api/agent/context      { url }                              -> { contextId, url, kind, title, summary }
+ *   POST /api/agent/context/stream { url }                           -> SSE（建上下文 + 进度）
+ *   POST /api/agent/context      { url }                             -> { contextId, … }（同上，一次性）
  *   POST /api/agent/ask/stream   { contextId, question, history }     -> SSE
  *     { contextId, mode, history }                                    -> SSE（出题）
  *     { contextId, action:'question' | 'hint' | 'grade', ... }        -> SSE
@@ -111,10 +112,26 @@ export class HttpAgentClient implements AgentClient {
     return this.contextId;
   }
 
-  async initContext(url: string): Promise<UrlContext> {
-    const r = await this.post<ContextResponse>('/api/agent/context', { url });
-    this.contextId = r.contextId;
-    return { url: r.url, title: r.title, summary: r.summary, size: r.size, chunks: r.chunks };
+  /**
+   * 建立上下文。
+   *
+   * 走流式（`/api/agent/context/stream`）而不是一次性接口：这是全流程里最长的
+   * 一段等待 —— 代码仓库要浅克隆（超时上限 180s）再扫描、切块、建索引，
+   * 一次性接口在这期间给不出任何信息。
+   *
+   * 刻意**不留一次性退路**：SSE 在本应用里是既有前提（提问 / 出题 / 判分 /
+   * 提示全走 SSE），它要是不可用，整个应用本来就用不了。留一条静默退路只会
+   * 让「流式坏了」再次变成无人察觉的隐性故障（`ask` 就踩过这个坑）。
+   */
+  async initContext(url: string, onTrace?: TraceHandler): Promise<UrlContext> {
+    const { result } = await this.streamRequest<ContextResponse>(
+      { url },
+      { onTrace },
+      '/api/agent/context/stream',
+    );
+    if (!result) throw new Error('服务端没有返回上下文信息');
+    this.contextId = result.contextId;
+    return { url: result.url, title: result.title, summary: result.summary, size: result.size, chunks: result.chunks };
   }
 
   /**
@@ -130,8 +147,9 @@ export class HttpAgentClient implements AgentClient {
       onDelta?: (delta: string) => void;
       onTrace?: TraceHandler;
     },
+    path = '/api/agent/ask/stream',
   ): Promise<{ result: T | null; sources?: string[]; answer: string }> {
-    const res = await fetch(`${this.baseUrl}/api/agent/ask/stream`, {
+    const res = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),

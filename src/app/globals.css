@@ -1479,6 +1479,20 @@ textarea {
   max-width: 480px;
 }
 
+/*
+ * 初始化阶段的实时思考面板。
+ *
+ * 刻意比上方的加载卡片宽（480 → 640）：卡片是「一句话标题」，面板是「过程日志」，
+ * 日志行更长，挤在 480px 里每行都要折两三次。宽度差也顺带建立了层级 ——
+ * 一眼能看出哪个是主状态、哪个是细节。
+ */
+.gate-trace {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 14px;
+  text-align: left;
+}
+
 .gate-badge {
   position: relative;
   display: inline-block;

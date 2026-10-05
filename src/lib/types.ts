@@ -199,8 +199,14 @@ export type TraceHandler = (event: TraceEvent) => void;
  * 不传时行为与改造前完全一致（静默等待），因此对调用方是纯增量的。
  */
 export interface AgentClient {
-  /** 解析 URL、建立问答上下文 */
-  initContext(url: string): Promise<UrlContext>;
+  /**
+   * 解析 URL、建立问答上下文。
+   *
+   * `onTrace` 可选 —— 传入时会收到「克隆仓库 / 抓取网页 / 切块建索引」的中间过程。
+   * 这一步是整个应用里最长的等待（仓库要浅克隆，超时上限 180s），
+   * 不把过程讲出来，用户只能对着一个不动的 spinner 猜是不是卡死了。
+   */
+  initContext(url: string, onTrace?: TraceHandler): Promise<UrlContext>;
 
   /**
    * 提问模式：根据 URL 内容回答用户问题。

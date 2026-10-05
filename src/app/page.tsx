@@ -8,6 +8,7 @@ import { ModelSettings } from '@/components/ModelSettings';
 import { ModeTabs } from '@/components/ModeTabs';
 import { QuestionTypeTabs } from '@/components/QuestionTypeTabs';
 import { ScorePanel } from '@/components/ScorePanel';
+import { ThinkingPanel } from '@/components/ThinkingPanel';
 import { UrlGate } from '@/components/UrlGate';
 import { useLlmSettings, useServerLlmInfo } from '@/hooks/useLlmSettings';
 import { useQASession } from '@/hooks/useQASession';
@@ -61,6 +62,16 @@ export default function Page() {
                 网页与代码仓库均可。
               </p>
             </div>
+            {/*
+              解析过程实时透出。这一步可能是全流程最长的等待（仓库要浅克隆，
+              超时上限 180s），只给一个 spinner 用户无法判断是卡死还是在干活。
+              轨迹还没到时保持原样，不额外加占位 —— 卡片上的 spinner 就是占位。
+            */}
+            {s.liveTrace.length > 0 && (
+              <div className="gate-trace">
+                <ThinkingPanel steps={s.liveTrace} live />
+              </div>
+            )}
           </div>
         </main>
       ) : (

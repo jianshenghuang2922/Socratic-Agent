@@ -1,53 +1,23 @@
 import { readLlmOverride } from '@/server/byok';
 import { ApiError, describeUpstream, readJson, requireString, toErrorResponse } from '@/server/http';
 import { chat, chatStream, extractJson } from '@/server/llm';
-import {
-  askMessages,
-  choiceQuestionMessages,
-  gradeShortMessages,
-  hintMessages,
-  shortQuestionMessages,
-  summarizeHistory,
-} from '@/server/prompts';
-import { contextForAsk, contextForQuestion, memoryDigest } from '@/server/rag';
-import { tokenize, tokenizeIdentifiers } from '@/server/retrieve';
+import { askMessages, gradeShortMessages, hintMessages, summarizeHistory } from '@/server/prompts';
+import { generateQuestionAttempt, isQuestionRetryable, MAX_QUESTION_ATTEMPTS } from '@/server/question';
+import { contextForAsk, memoryDigest } from '@/server/rag';
 import {
   getAnswerKey,
   MAX_SHORT_SCORE,
-  newQuestionId,
   recordInteraction,
   recordUserQuery,
   requireContext,
-  saveAnswerKey,
   verdictForScore,
 } from '@/server/store';
-import { emitTrace, scoreLabel, shortenLabel, type TraceSink } from '@/server/trace';
+import { emitTrace, scoreLabel, type TraceSink } from '@/server/trace';
 import type { LlmOverride } from '@/server/config';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
-/** 出题最多重出几次（重试由前端逐次驱动，见下方说明） */
-const MAX_QUESTION_ATTEMPTS = 3;
-/**
- * 判「重复题」的阈值 —— 口径是**标识符词元**的重合度，不是整句重合度。
- *
- * 原实现拿整句算「交集 / 较短一方」，而同一批资料出的题天然共用句式，
- * 于是两道考不同函数的题（`isFetchSupported` vs `contentTypeHeader`，
- * 同属 lib/adapters/fetch.js）重合率高达 0.7~0.88，必被误判成重复、
- * 一路重试到 502。实测（`.tmp/probe-sim.mjs`）：
- *
- *   同文件、不同标识符（不重复）→ 0.30 / 0.50 / 0.67
- *   同标识符、换个说法（重复）  → 1.00
- *
- * 换成「只比标识符 + Jaccard」，两类之间留出干净的空隙，0.8 落在中间。
- */
-const DUP_THRESHOLD = 0.8;
-/**
- * 没有标识符可依时（纯中文的网页内容）退回整句口径。
- * 这种场景下句式模板带来的虚高没那么严重，阈值相应放宽到 0.6。
- */
-const DUP_THRESHOLD_TEXT = 0.6;
 /** 提示正文长度上限 —— 防止模型写成一篇小作文，把答案顺带讲透 */
 const MAX_HINT_CHARS = 400;
 
@@ -337,112 +307,22 @@ export async function POST(req: Request) {
         const mode = body.mode === 'short' ? 'short' : 'choice';
         const attempt = clampAttempt(body.attempt);
         const { askedQuestions } = summarizeHistory(body.history);
-        const questionId = newQuestionId();
 
-        if (attempt > 0) {
-          emitTrace(
-            trace,
-            '出题',
-            `第 ${attempt + 1} 次尝试：上一版不合格，正在换一批资料、换一个知识点重出。`,
-          );
-        }
-
-        // 重试时换一批采样块，绕开刚出过题的那段资料
-        const bundle = await contextForQuestion(
+        /*
+         * 出题的全部逻辑（解析模型输出、判重、锚定校验、写答案键）在
+         * `src/server/question.ts` 里，与一次性路由 `/api/agent/question` 共用一份。
+         * 两条路由各写一份的代价已经付过：流式这边把判重口径修好了，
+         * 一次性那边还留着旧的整句口径，于是回归里「修好了」和「没修好」同时成立。
+         */
+        const result = await generateQuestionAttempt({
           ctx,
-          askedQuestions.length + attempt * 3,
-          override,
-          trace,
-        );
-
-        const opts = {
+          mode,
           askedQuestions,
-          focus: bundle.focus.map((f) => f.prompt),
-          sources: bundle.sources,
-          extraHint:
-            attempt === 0
-              ? undefined
-              : '刚才那一版不合格（重复、或没有引用资料里的具体文件/函数名）。请换一个知识点或换一个角度，并确保题干里出现资料中的具体名称。',
-        };
-
-        emitTrace(
-          trace,
-          '出题',
-          `正在让模型按资料出题（题型：${mode === 'choice' ? '选择题' : '简答题'}，温度 ${
-            attempt === 0 ? 0.9 : 1.0
-          }，第 ${attempt + 1} 版）。`,
-        );
-
-        const messages =
-          mode === 'choice'
-            ? choiceQuestionMessages(ctx, bundle.text, opts)
-            : shortQuestionMessages(ctx, bundle.text, opts);
-
-        const raw = await chat(messages, {
-          temperature: attempt === 0 ? 0.9 : 1.0,
-          maxTokens: 2500,
+          attempt,
           override,
+          trace,
         });
-
-        const q = mode === 'choice' ? parseChoiceDraft(raw) : parseShortDraft(raw);
-        emitTrace(trace, '出题', `模型已出稿：${shortenLabel(q.prompt, 70)}`);
-
-        if (askedQuestions.some((prev) => isDuplicate(prev, q.prompt))) {
-          emitTrace(trace, '出题', '自检未通过：与之前出过的题考的是同一个知识点。');
-          throw new ApiError(502, '模型重复出题');
-        }
-
-        // 最后一次尝试不再卡锚定，避免因为过度严格而整个请求失败
-        const lastChance = attempt >= MAX_QUESTION_ATTEMPTS - 1;
-        if (!lastChance && !hasConcreteAnchor(q.prompt, bundle)) {
-          emitTrace(
-            trace,
-            '出题',
-            '自检未通过：题干没有锚定到资料里的具体文件 / 函数名，属于可套在任何项目上的八股题。',
-          );
-          throw new ApiError(502, '题目没有锚定到资料中的具体位置');
-        }
-
-        if (!lastChance) {
-          emitTrace(trace, '出题', '自检通过：题干锚定了资料中的具体名称，与历史题目也不重复。');
-        } else {
-          emitTrace(trace, '出题', `已到第 ${MAX_QUESTION_ATTEMPTS} 版，放宽锚定要求以免整轮失败。`);
-        }
-
-        if (mode === 'choice') {
-          const c = q as { prompt: string; options: string[]; correctIndex: number; explanation: string };
-          saveAnswerKey(ctx.id, questionId, {
-            prompt: c.prompt,
-            options: c.options,
-            correctIndex: c.correctIndex,
-            explanation: c.explanation,
-            sourceLabels: bundle.sources,
-          });
-          emitTrace(trace, '出题', `题目已生成，正确答案已锁在服务端（前端拿不到，无法作弊）。`);
-          send({
-            type: 'result',
-            result: {
-              id: questionId,
-              type: 'choice',
-              prompt: c.prompt,
-              options: c.options,
-              sources: bundle.sources,
-            },
-          });
-          return;
-        }
-
-        const s = q as { prompt: string; reference: string };
-        saveAnswerKey(ctx.id, questionId, {
-          prompt: s.prompt,
-          reference: s.reference,
-          sourceLabels: bundle.sources,
-        });
-        emitTrace(trace, '出题', `题目已生成，参考答案已锁在服务端（前端拿不到，无法作弊）。`);
-        send({
-          type: 'result',
-          result: { id: questionId, type: 'short', prompt: s.prompt, sources: bundle.sources },
-        });
+        send({ type: 'result', result });
       }
     },
   });
@@ -459,15 +339,13 @@ export async function POST(req: Request) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 出题辅助（原 question/route.ts，随重试下放一并搬来）                 */
+/* 本端点自用的零碎辅助                                                */
+/*                                                                     */
+/* 出题的解析 / 判重 / 锚定校验全部在 `src/server/question.ts`，        */
+/* 这里**不再留副本** —— 两份实现必然分叉，上一次就是这么坏的。         */
 /* ------------------------------------------------------------------ */
 
 const LETTERS = 'ABCDEFGH';
-
-/** 自检类失败才值得重出；会话失效、网关故障重试没有意义 */
-function isQuestionRetryable(err: ApiError): boolean {
-  return /重复出题|没有锚定|缺少题干|选项不足|下标越界|参考答案/.test(err.message);
-}
 
 function clampAttempt(value: unknown): number {
   const n = typeof value === 'number' ? Math.floor(value) : 0;
@@ -481,95 +359,6 @@ function asString(v: unknown): string | undefined {
 
 function asRecord(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
-}
-
-function asText(value: unknown, max: number): string {
-  return typeof value === 'string' ? value.trim().slice(0, max) : '';
-}
-
-/**
- * 两道题是否在考同一个知识点。
- *
- * 优先只比标识符 —— 题干里的文件名/函数名才是知识点，
- * 「在 … 中，… 的主要职责是什么」这层壳是共享模板，比它没有信息量。
- * 双方都拿不出标识符（纯中文网页内容）时才退回整句口径。
- */
-function isDuplicate(a: string, b: string): boolean {
-  const ia = tokenizeIdentifiers(a);
-  const ib = tokenizeIdentifiers(b);
-  if (ia.length >= 2 && ib.length >= 2) return jaccard(ia, ib) >= DUP_THRESHOLD;
-  return jaccard(tokenize(a), tokenize(b)) >= DUP_THRESHOLD_TEXT;
-}
-
-/**
- * Jaccard：交集 / 并集，取值 0~1。
- * 刻意不用「交集 / 较短一方」—— 后者对长度差异不敏感，
- * 一道短题会被一道长题完全包含而算出 1.0，属于虚高。
- */
-function jaccard(a: Iterable<string>, b: Iterable<string>): number {
-  const A = new Set(a);
-  const B = new Set(b);
-  if (A.size === 0 || B.size === 0) return 0;
-  let hits = 0;
-  for (const t of A) if (B.has(t)) hits += 1;
-  return hits / (A.size + B.size - hits);
-}
-
-/**
- * 检查题干是否锚定到了资料里的具体名称。
- *
- * 这是对「八股式提问」的硬约束：光在提示词里说「要引用文件名」模型经常不听，
- * 所以在服务端也验一遍 —— 题干里至少得有一个词，是本次资料里真实出现过的标识符
- * （文件名、函数名、配置项等）。
- */
-function hasConcreteAnchor(
-  prompt: string,
-  bundle: { sources: string[]; text: string },
-): boolean {
-  const haystack = `${bundle.sources.join('\n')}\n${bundle.text}`.toLowerCase();
-  const candidates = prompt.match(/[A-Za-z][A-Za-z0-9_$.-]{2,}/g) ?? [];
-
-  for (const raw of candidates) {
-    const token = raw.toLowerCase().replace(/[.,]+$/, '');
-    if (token.length < 3) continue;
-    // 形如 `Axios.js` / `lib/core` 的写法本身就说明在指位置
-    if (/[./]/.test(token)) return true;
-    if (haystack.includes(token)) return true;
-  }
-  return false;
-}
-
-function parseChoiceDraft(raw: string) {
-  const draft = extractJson<{
-    prompt?: unknown;
-    options?: unknown;
-    correctIndex?: unknown;
-    explanation?: unknown;
-  }>(raw, '选择题');
-  const prompt = asText(draft.prompt, 300);
-  const options = Array.isArray(draft.options)
-    ? draft.options.map((o) => asText(o, 200)).filter(Boolean)
-    : [];
-  const correctIndex = Number(draft.correctIndex);
-
-  if (!prompt) throw new ApiError(502, '模型出的选择题缺少题干');
-  if (options.length < 2) throw new ApiError(502, '模型出的选择题选项不足');
-  if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) {
-    throw new ApiError(502, '模型给出的正确答案下标越界');
-  }
-
-  return { prompt, options, correctIndex, explanation: asText(draft.explanation, 600) };
-}
-
-function parseShortDraft(raw: string) {
-  const draft = extractJson<{ prompt?: unknown; reference?: unknown }>(raw, '简答题');
-  const prompt = asText(draft.prompt, 200);
-  const reference = asText(draft.reference, 800);
-
-  if (!prompt) throw new ApiError(502, '模型出的简答题缺少题干');
-  if (!reference) throw new ApiError(502, '模型没有给出参考答案');
-
-  return { prompt, reference };
 }
 
 /**

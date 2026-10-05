@@ -128,8 +128,13 @@ export function useQASession() {
       setPhase('initializing');
       setBusy(true);
       setStatus({ kind: 'loading', text: '正在解析 URL 内容…' });
+      /*
+       * 解析过程也要能看见：这是全流程里最长的一段等待（仓库要浅克隆，
+       * 超时上限 180s），原来这里只有一个不动的 spinner。
+       */
+      const { onTrace, collected, clear } = makeTraceCollector();
       try {
-        const ctx = await agent.initContext(url);
+        const ctx = await agent.initContext(url, onTrace);
         setContext(ctx);
         setPhase('ready');
         setMessages([
@@ -141,6 +146,8 @@ export function useQASession() {
             content: `已建立问答上下文：**${ctx.title}**\n\n${ctx.summary ?? ''}${
               ctx.chunks ? `\n\n已建立检索索引（${ctx.chunks} 个语义块），提问与出题都会先从这里检索相关内容。` : ''
             }\n\n当前为「提问模式」，你可以直接向我提问；切换到「回答模式」则由我来出题 —— 题型（选择题 / 简答题）由你选定后才会开始。`,
+            // 归档解析过程：用户能回看「这个上下文是怎么建起来的」（扫描了多少文件、过滤了多少块）
+            trace: collected.length ? collected : undefined,
           },
         ]);
         setStatus({ kind: 'success', text: '上下文已就绪' });
@@ -149,10 +156,11 @@ export function useQASession() {
         fail(err);
         return;
       } finally {
+        clear();
         setBusy(false);
       }
     },
-    [agent, fail],
+    [agent, fail, makeTraceCollector],
   );
 
   const resetSession = useCallback(() => {

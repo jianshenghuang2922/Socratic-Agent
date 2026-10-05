@@ -6,9 +6,12 @@ import { promisify } from 'node:util';
 import { parseRepo } from '@/lib/urlKind';
 import { limits } from '../config';
 import { ApiError, describeNetworkError } from '../http';
+import { emitTrace, type TraceSink } from '../trace';
 import { categorize, isLowValueBlock, type LoadedSource, type SourceBlock } from './types';
 
 const run = promisify(execFile);
+
+/**
 
 /** 直接跳过的目录：依赖、产物、缓存，无一有分析价值 */
 const SKIP_DIRS = new Set([
@@ -225,15 +228,37 @@ export function chunkCode(relPath: string, text: string): SourceBlock[] {
   return blocks;
 }
 
-export async function loadRepo(rawUrl: string): Promise<LoadedSource> {
+export async function loadRepo(rawUrl: string, trace?: TraceSink): Promise<LoadedSource> {
   const parsed = parseRepo(rawUrl);
   if (!parsed) {
     throw new ApiError(400, '无法从该 URL 解析出仓库地址，请使用形如 https://github.com/owner/repo 的链接');
   }
 
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'socratic-repo-'));
+  const cloneLimitSec = Math.round(limits.cloneTimeoutMs / 1000);
 
   try {
+    emitTrace(
+      trace,
+      '克隆',
+      `正在浅克隆 ${parsed.owner}/${parsed.repo}…（只取最新一次提交、不拉标签，超时上限 ${cloneLimitSec}s）`,
+    );
+
+    /*
+     * 心跳只在有 sink 时启动 —— 没有 trace 时挂一个空转的定时器纯属浪费，
+     * 而且会让「函数在无 sink 下行为完全一致」这条约定变得不成立。
+     *
+     * `git clone` 期间拿不到任何进度，而超时上限有 180s：不报点东西，
+     * 用户无法判断是卡死了还是在下载。
+     */
+    const startedAt = Date.now();
+    const heartbeat = trace
+      ? setInterval(() => {
+          const sec = Math.round((Date.now() - startedAt) / 1000);
+          emitTrace(trace, '克隆', `仍在克隆…已等待 ${sec}s（大仓库会明显偏慢，超时上限 ${cloneLimitSec}s）。`);
+        }, limits.cloneHeartbeatMs)
+      : null;
+
     try {
       await run('git', ['clone', '--depth', '1', '--single-branch', '--no-tags', parsed.cloneUrl, workDir], {
         timeout: limits.cloneTimeoutMs,
@@ -247,7 +272,7 @@ export async function loadRepo(rawUrl: string): Promise<LoadedSource> {
         throw new ApiError(500, '服务器未安装 git，无法解析代码仓库');
       }
       if (e.killed) {
-        throw new ApiError(504, `克隆仓库超时（${Math.round(limits.cloneTimeoutMs / 1000)}s），仓库可能过大`);
+        throw new ApiError(504, `克隆仓库超时（${cloneLimitSec}s），仓库可能过大`);
       }
       const stderr = (e.stderr ?? '').toString();
       if (/could not read Username|Authentication failed|terminal prompts disabled/i.test(stderr)) {
@@ -257,7 +282,12 @@ export async function loadRepo(rawUrl: string): Promise<LoadedSource> {
         throw new ApiError(422, `仓库不存在：${parsed.owner}/${parsed.repo}`);
       }
       throw new ApiError(502, describeNetworkError(err, '克隆仓库'));
+    } finally {
+      // 必须在 catch 抛出之前停掉，否则定时器会在请求结束后继续往已关闭的流里写
+      if (heartbeat) clearInterval(heartbeat);
     }
+
+    emitTrace(trace, '克隆', `克隆完成（耗时 ${Math.round((Date.now() - startedAt) / 1000)}s），正在扫描文件树…`);
 
     const files: string[] = [];
     await walk(workDir, workDir, files, { files: 0 });
@@ -266,7 +296,14 @@ export async function loadRepo(rawUrl: string): Promise<LoadedSource> {
       throw new ApiError(422, '仓库中没有可分析的文本文件');
     }
 
+    emitTrace(
+      trace,
+      '扫描',
+      `扫描到 ${files.length} 个可索引的文本文件（已跳过依赖 / 产物 / 二进制 / 文档脚手架目录）。`,
+    );
+
     files.sort((a, b) => scoreFile(b) - scoreFile(a));
+    emitTrace(trace, '索引', '已按文件价值排序（README / 配置 / 入口文件优先），开始逐文件切块建索引…');
 
     const blocks: SourceBlock[] = [];
     let indexed = 0;
@@ -300,6 +337,14 @@ export async function loadRepo(rawUrl: string): Promise<LoadedSource> {
         indexed += b.text.length;
       }
     }
+
+    emitTrace(
+      trace,
+      '索引',
+      `纳入 ${included} / ${files.length} 个文件，切分为 ${blocks.length} 个语义块${
+        dropped > 0 ? `（过滤掉 ${dropped} 个导航 / 名单类低价值块）` : ''
+      }，共 ${indexed.toLocaleString('zh-CN')} 字。`,
+    );
 
     const topLevel = await fs.readdir(workDir).catch(() => [] as string[]);
     const overview = topLevel.filter((n) => !SKIP_DIRS.has(n)).sort().join('  ');

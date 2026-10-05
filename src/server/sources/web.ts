@@ -1,6 +1,7 @@
 import { limits } from '../config';
 import { ApiError, describeNetworkError } from '../http';
 import { isPrivateHostname } from '../net';
+import { emitTrace, type TraceSink } from '../trace';
 import { categorize, isLowValueBlock, type LoadedSource, type SourceBlock } from './types';
 
 const UA =
@@ -214,7 +215,7 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
   return new TextDecoder('utf-8', { fatal: false }).decode(merged);
 }
 
-export async function loadWeb(rawUrl: string): Promise<LoadedSource> {
+export async function loadWeb(rawUrl: string, trace?: TraceSink): Promise<LoadedSource> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -225,9 +226,15 @@ export async function loadWeb(rawUrl: string): Promise<LoadedSource> {
     throw new ApiError(400, '只支持 http / https 协议的 URL');
   }
   assertPublicHost(url);
+  emitTrace(trace, '抓取', `已确认 ${url.hostname} 是公网地址（内网 / 本机地址会被拒绝）。`);
 
   let response: Response;
   try {
+    emitTrace(
+      trace,
+      '抓取',
+      `正在请求该网页…（超时上限 ${Math.round(limits.fetchTimeoutMs / 1000)}s，自动跟随跳转）`,
+    );
     response = await fetch(url, {
       headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
       redirect: 'follow',
@@ -247,10 +254,27 @@ export async function loadWeb(rawUrl: string): Promise<LoadedSource> {
   }
 
   const contentType = response.headers.get('content-type') ?? '';
+  emitTrace(
+    trace,
+    '抓取',
+    `已收到响应：HTTP ${response.status}${contentType ? `，${contentType.split(';')[0]}` : ''}，正在读取正文…`,
+  );
+
   const raw = await readCapped(response, limits.maxHtmlBytes);
+  const capMb = Math.round(limits.maxHtmlBytes / 1024 / 1024);
+  emitTrace(
+    trace,
+    '抓取',
+    `已读取 ${raw.length.toLocaleString('zh-CN')} 字符${raw.length >= limits.maxHtmlBytes ? `（已达 ${capMb}MB 上限，超出部分已截断）` : ''}。`,
+  );
 
   const isHtml = /html|xml/i.test(contentType) || /^\s*<(!doctype|html)/i.test(raw);
   const text = isHtml ? htmlToText(raw) : raw.trim();
+  emitTrace(
+    trace,
+    '解析',
+    isHtml ? '已剥离脚本 / 样式标签，抽取出正文文本。' : '响应不是 HTML，按纯文本直接使用。',
+  );
 
   if (text.length < 80) {
     throw new ApiError(
@@ -263,7 +287,24 @@ export async function loadWeb(rawUrl: string): Promise<LoadedSource> {
   const truncated = text.length > limits.indexBudgetChars;
   const content = truncated ? text.slice(0, limits.indexBudgetChars) : text;
 
-  const blocks = chunkDocument(content, title).filter((b) => !isLowValueBlock(b.text));
+  const chunked = chunkDocument(content, title);
+  const blocks = chunked.filter((b) => !isLowValueBlock(b.text));
+  const dropped = chunked.length - blocks.length;
+  emitTrace(
+    trace,
+    '切分',
+    `正文 ${text.length.toLocaleString('zh-CN')} 字，标题「${title}」，按标题层级切分为 ${chunked.length} 个语义块${
+      dropped > 0 ? `（过滤掉 ${dropped} 个导航 / 名单类低价值块）` : ''
+    }。`,
+  );
+  if (truncated) {
+    emitTrace(
+      trace,
+      '切分',
+      `正文超出索引上限，已截取前 ${limits.indexBudgetChars.toLocaleString('zh-CN')} 字建立索引。`,
+    );
+  }
+
   if (blocks.length === 0) {
     blocks.push({ label: title, path: [title], text: content, category: categorize(title) });
   }

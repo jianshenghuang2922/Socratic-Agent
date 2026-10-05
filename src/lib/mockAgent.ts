@@ -174,11 +174,34 @@ export class MockAgentClient implements AgentClient {
   private shortCursor = 0;
   private lastWasRepo = false;
 
-  async initContext(url: string): Promise<UrlContext> {
-    await sleep(1400);
+  async initContext(url: string, onTrace?: TraceHandler): Promise<UrlContext> {
     const repo = isRepoUrl(url);
     this.lastWasRepo = repo;
     const kb = repo ? REPO_KNOWLEDGE : WEB_KNOWLEDGE;
+
+    // 与真实后端同构：准备 → 抓取/克隆 → 扫描 → 切块 → 建索引
+    await playTrace(
+      repo
+        ? [
+            { stage: '准备', detail: '识别为代码仓库地址：将浅克隆仓库、扫描文本文件并建立代码索引。' },
+            { stage: '克隆', detail: `正在浅克隆 ${deriveTitle(url)}…（只取最新一次提交，超时上限 180s）` },
+            { stage: '克隆', detail: '克隆完成（耗时 1s），正在扫描文件树…' },
+            { stage: '扫描', detail: `扫描到 ${kb.facts.length * 12} 个可索引的文本文件（已跳过依赖 / 产物 / 二进制目录）。` },
+            { stage: '索引', detail: '已按文件价值排序（README / 配置 / 入口文件优先），开始逐文件切块建索引…' },
+            { stage: '索引', detail: `纳入 ${kb.facts.length * 8} 个文件，切分为 ${kb.facts.length * 3} 个语义块（模拟）。` },
+          ]
+        : [
+            { stage: '准备', detail: '识别为网页地址：将抓取页面、抽取正文并建立文档索引。' },
+            { stage: '抓取', detail: '已确认目标站点是公网地址，正在请求该网页…（模拟）' },
+            { stage: '抓取', detail: '已收到响应：HTTP 200，text/html，正在读取正文…' },
+            { stage: '解析', detail: '已剥离脚本 / 样式标签，抽取出正文文本。' },
+            { stage: '切分', detail: `正文 ${kb.facts.length * 800} 字，按标题层级切分为 ${kb.facts.length * 3} 个语义块（模拟）。` },
+          ],
+      onTrace,
+      260,
+    );
+
+    await sleep(600);
     return {
       url,
       title: deriveTitle(url),
