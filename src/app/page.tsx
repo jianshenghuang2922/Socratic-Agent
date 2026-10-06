@@ -8,6 +8,7 @@ import { ModelSettings } from '@/components/ModelSettings';
 import { ModeTabs } from '@/components/ModeTabs';
 import { QuestionTypeTabs } from '@/components/QuestionTypeTabs';
 import { ScorePanel } from '@/components/ScorePanel';
+import { ShareQuiz } from '@/components/ShareQuiz';
 import { SourceViewerProvider } from '@/components/SourceViewer';
 import { ThinkingPanel } from '@/components/ThinkingPanel';
 import { UrlGate } from '@/components/UrlGate';
@@ -20,6 +21,7 @@ export default function Page() {
   const serverInfo = useServerLlmInfo();
   const trial = useTrialQuota();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const openSettings = () => setSettingsOpen(true);
 
@@ -102,6 +104,20 @@ export default function Page() {
               questionCount={s.questionCount}
               pulsing={s.pulsing}
             />
+            {/*
+              扩散出口：把已出的选择题打包成一条链接。
+              一直可见（不按模式 / 题型藏起来）—— 它打包的是整个会话的选择题，
+              与「当前在提问还是在答题」无关，藏起来只会让人找不到。
+            */}
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm share-entry"
+              disabled={s.busy}
+              onClick={() => setShareOpen(true)}
+              title="把这次会话里已出的选择题打包成一条链接，别人打开就能做"
+            >
+              分享测验
+            </button>
           </div>
 
           <main className="app-main">
@@ -145,6 +161,8 @@ export default function Page() {
         onSave={llm.save}
         onClear={llm.clear}
       />
+
+      <ShareQuiz open={shareOpen} onClose={() => setShareOpen(false)} onGenerate={s.shareQuiz} />
       </div>
     </SourceViewerProvider>
   );

@@ -2604,3 +2604,257 @@ textarea {
     transform: scale(0.78);
   }
 }
+
+/* ============================================================
+   分享测验 —— 生成入口 / 弹层 / 做题页
+   ============================================================ */
+
+/*
+ * 「分享测验」按钮推到控制栏最右端。
+ * 它和「得分 / 题目」在语义上没有关系（一个看进度，一个做分发），
+ * 挨在一起容易被当成得分模块的一部分顺手点到。
+ */
+.share-entry {
+  margin-left: auto;
+}
+
+.share-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.share-row .field-input {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.share-row .btn {
+  flex: none;
+  padding: 0 18px;
+}
+
+.share-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 14px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* 弹层里的小号 spinner：复用同一个动画，但不要它 38px + 20px 底边距的尺寸 */
+.share-loading .spinner {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border-width: 2px;
+}
+
+/* ---------------- 做题页 ---------------- */
+
+/*
+ * 居中用 flex + 子元素 margin-block:auto，而不是 place-items:center。
+ *
+ * 后者在内容比视口高时会把顶部一起推出去，而滚动容器到不了负方向 ——
+ * 题目一多，第一题就永远看不到了。auto 外边距在空间不足时自动塌成 0，
+ * 于是「短卡片居中、长内容从顶部开始滚」两件事同时成立。
+ */
+.app-main--quiz {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 34px 22px 56px;
+}
+
+.quiz-card {
+  width: 100%;
+  max-width: 720px;
+  margin-block: auto;
+  background: var(--glass);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  padding: 26px 26px 24px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px) saturate(155%);
+  -webkit-backdrop-filter: blur(24px) saturate(155%);
+  animation: rise 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quiz-card--result {
+  max-width: 560px;
+  text-align: center;
+}
+
+.quiz-title {
+  margin: 0 0 10px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  color: #f2f6ff;
+}
+
+.quiz-sub {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.quiz-note {
+  margin: 0 0 16px;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+
+.quiz-source {
+  display: block;
+  margin: 0 0 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quiz-source:hover {
+  color: #cddcff;
+  text-decoration: underline;
+}
+
+/* 进度：文字 + 条 + 已答对，三者在同一行 */
+.quiz-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.quiz-progress__text,
+.quiz-progress__score {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.quiz-bar {
+  flex: 1;
+  min-width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.quiz-bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  box-shadow: 0 0 14px -2px rgba(91, 140, 255, 0.9);
+  transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quiz-sources {
+  margin-top: 12px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.quiz-explanation {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+
+.quiz-error {
+  margin: 12px 0 0;
+}
+
+/* ---------------- 成绩卡 ---------------- */
+
+.quiz-score-big {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  margin: 10px 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.quiz-score-num {
+  font-size: 58px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.quiz-score-den {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.quiz-verdict {
+  margin: 0 0 14px;
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: var(--text);
+}
+
+.quiz-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.quiz-fine {
+  margin: 16px 0 0;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+
+.quiz-fine a {
+  color: #a9c2ff;
+}
+
+@media (max-width: 620px) {
+  .app-main--quiz {
+    padding: 20px 14px 40px;
+  }
+
+  .quiz-card {
+    padding: 20px 18px 18px;
+  }
+
+  .quiz-title {
+    font-size: 19px;
+  }
+
+  .quiz-score-num {
+    font-size: 46px;
+  }
+
+  .share-row {
+    flex-direction: column;
+  }
+
+  .share-row .btn {
+    padding: 11px 18px;
+  }
+}
+

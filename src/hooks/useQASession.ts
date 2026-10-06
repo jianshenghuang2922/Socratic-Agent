@@ -432,6 +432,19 @@ export function useQASession() {
     [agent, fail, makeTraceCollector, messages, patchQuestion],
   );
 
+  /* ---------------- 分享回路 ---------------- */
+
+  /**
+   * 把这次会话里已出的选择题打包成一条可分享链接。
+   *
+   * 不在这个 hook 里管理弹层状态：它只是一个数据动作，
+   * 「什么时候弹、弹成什么样」是纯 UI 决定，留在页面组件里更清楚。
+   *
+   * 也**不置 busy**：这个动作不调模型、毫秒级返回，
+   * 把它算进 busy 会让整个界面（包括输入框）闪一下禁用态。
+   */
+  const shareQuiz = useCallback(() => agent.shareQuiz(), [agent]);
+
   /* ---------------- 模式 / 题型切换 ---------------- */
 
   const changeMode = useCallback(
@@ -527,5 +540,6 @@ export function useQASession() {
     changeMode,
     changeQuestionType,
     requestNextQuestion,
+    shareQuiz,
   };
 }

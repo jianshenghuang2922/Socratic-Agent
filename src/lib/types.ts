@@ -216,6 +216,56 @@ export interface SourceView {
   chunks: number;
 }
 
+/* ------------------------------------------------------------------ */
+/* 分享测验                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 分享出去的一道题 —— **不含答案**。
+ *
+ * 与 ChoiceQuestion 的区别：那份是「自己会话里的题」，带 selectedIndex /
+ * submitted / correctIndex 等作答态字段；这份是给陌生人做的一次性快照，
+ * 服务端只下发题干与选项，答案键留在服务端。
+ */
+export interface SharedQuestion {
+  id: string;
+  prompt: string;
+  options: string[];
+  /** 出题时依据的资料块标签，让做题的人知道这题是从哪儿来的 */
+  sources?: string[];
+}
+
+/** 一条分享链接指向的整套测验 */
+export interface SharedQuizView {
+  id: string;
+  /** 来源标题，展示成「N 道题来自《xxx》」 */
+  title: string;
+  /** 原始 URL，做题的人可以点回去看原文 */
+  sourceUrl: string;
+  /** 题目数（= questions.length，单独给是为了渲染标题时不必先算长度） */
+  count: number;
+  /** 已有多少人做过（按去重后的做题者计，不是页面打开次数） */
+  players: number;
+  questions: SharedQuestion[];
+}
+
+/** 分享测验里一道题的判分结果 */
+export interface SharedQuizGrade {
+  correct: boolean;
+  correctIndex: number;
+  explanation: string;
+}
+
+/** 生成分享链接的结果 */
+export interface SharedQuizLink {
+  quizId: string;
+  title: string;
+  /** 原始内容地址（不是测验链接 —— 测验链接由前端按 origin + /quiz/{quizId} 拼） */
+  sourceUrl: string;
+  count: number;
+  players: number;
+}
+
 /**
  * 思考轨迹的接收器。
  * 服务端每完成一个中间步骤就回调一次，前端据此实时渲染。
@@ -282,4 +332,15 @@ export interface AgentClient {
    * 所以这是个廉价操作，不需要 onTrace。
    */
   getSource(label: string): Promise<SourceView>;
+
+  /**
+   * 把这次会话里已出的选择题打包成一条可分享链接。
+   *
+   * 为什么值得单独做一个动作：做完题是个死胡同 —— 用户唯一的「下一步」是关掉页面。
+   * 给他一条能发到群里的链接，链路才从「一个人用」变成「一群人用」。
+   *
+   * 这个动作**不调模型、不占额度**：分享的内容是已经生成好的题目与答案键，
+   * 判分是纯服务端整数比对（见 src/server/quiz.ts）。别人做一百遍也不花钱。
+   */
+  shareQuiz(): Promise<SharedQuizLink>;
 }

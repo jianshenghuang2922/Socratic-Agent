@@ -95,6 +95,12 @@ export interface StoredContext {
   index?: BM25Index;
   /** 查询扩展缓存：原查询 -> 映射到的项目标识符 */
   expansions?: Map<string, string[]>;
+  /**
+   * 这套会话已经分享出去的测验 id。
+   * 记下来是为了让「生成测验链接」对同一会话幂等 —— 重复点击只更新内容、
+   * 复用同一个链接，而不是每次生成一条新链接（见 quiz.ts 的 publishQuiz）。
+   */
+  quizId?: string;
 }
 
 /** 会话存活时长 */

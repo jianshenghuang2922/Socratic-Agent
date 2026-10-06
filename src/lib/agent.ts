@@ -11,6 +11,7 @@ import type {
   ShortGrade,
   ShortQuestion,
   SourceView,
+  SharedQuizLink,
   TraceEvent,
   TraceHandler,
   UrlContext,
@@ -445,6 +446,16 @@ export class HttpAgentClient implements AgentClient {
    */
   async getSource(label: string): Promise<SourceView> {
     return this.post<SourceView>('/api/agent/source', { contextId: this.session(), label });
+  }
+
+  /**
+   * 生成分享链接。
+   *
+   * 走一次性接口而不是 SSE：服务端只是把已存的题目换个容器装起来，
+   * 没有任何中间步骤可讲（不调模型、不检索），套上流式只会多一层解析。
+   */
+  async shareQuiz(): Promise<SharedQuizLink> {
+    return this.post<SharedQuizLink>('/api/agent/quiz', { contextId: this.session() });
   }
 }
 

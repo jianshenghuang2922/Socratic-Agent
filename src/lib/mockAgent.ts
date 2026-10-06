@@ -8,6 +8,7 @@ import type {
   ShortGrade,
   ShortQuestion,
   SourceView,
+  SharedQuizLink,
   TraceHandler,
   UrlContext,
 } from './types';
@@ -174,10 +175,16 @@ export class MockAgentClient implements AgentClient {
   private choiceCursor = 0;
   private shortCursor = 0;
   private lastWasRepo = false;
+  /** 记下最近一次解析的地址，分享测验时要用它当来源 */
+  private lastUrl = '';
+  /** 模拟「对同一会话幂等」：重复生成复用同一个 id */
+  private mockQuizId: string | null = null;
 
   async initContext(url: string, onTrace?: TraceHandler): Promise<UrlContext> {
     const repo = isRepoUrl(url);
     this.lastWasRepo = repo;
+    this.lastUrl = url;
+    this.mockQuizId = null;
     const kb = repo ? REPO_KNOWLEDGE : WEB_KNOWLEDGE;
 
     // 与真实后端同构：准备 → 抓取/克隆 → 扫描 → 切块 → 建索引
@@ -434,6 +441,25 @@ export class MockAgentClient implements AgentClient {
       focus: { start: head.length + 2, end: head.length + 2 + cited.length },
       externalUrl: undefined,
       chunks: 3,
+    };
+  }
+
+  /**
+   * 生成分享链接。
+   *
+   * Mock 下没有服务端可存题目，返回一个形状一致的结果即可 ——
+   * 关键是**幂等**：重复调用必须给同一个 quizId，
+   * 否则「点两次得到两条链接」这类 bug 在本地联调时根本看不出来。
+   */
+  async shareQuiz(): Promise<SharedQuizLink> {
+    await sleep(240);
+    this.mockQuizId ??= `mock-${Math.random().toString(36).slice(2, 10)}`;
+    return {
+      quizId: this.mockQuizId,
+      title: deriveTitle(this.lastUrl || 'https://example.local/mock'),
+      sourceUrl: this.lastUrl || 'https://example.local/mock',
+      count: Math.max(1, this.choiceCursor),
+      players: 0,
     };
   }
 }
