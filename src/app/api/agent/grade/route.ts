@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { limits } from '@/server/config';
 import { readLlmOverride } from '@/server/byok';
 import { ApiError, readJson, requireString, toErrorResponse } from '@/server/http';
 import { chat, extractJson } from '@/server/llm';
@@ -79,7 +80,7 @@ export async function POST(req: Request) {
 
       const raw = await chat(gradeShortMessages(ctx, prompt, reference, answer, bundle.text), {
         temperature: 0.2,
-        maxTokens: 2500,
+        maxTokens: limits.llmMaxTokens,
         override,
       });
 

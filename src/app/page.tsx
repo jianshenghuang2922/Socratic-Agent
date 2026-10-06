@@ -8,6 +8,7 @@ import { ModelSettings } from '@/components/ModelSettings';
 import { ModeTabs } from '@/components/ModeTabs';
 import { QuestionTypeTabs } from '@/components/QuestionTypeTabs';
 import { ScorePanel } from '@/components/ScorePanel';
+import { SourceViewerProvider } from '@/components/SourceViewer';
 import { ThinkingPanel } from '@/components/ThinkingPanel';
 import { UrlGate } from '@/components/UrlGate';
 import { useLlmSettings, useServerLlmInfo } from '@/hooks/useLlmSettings';
@@ -28,8 +29,13 @@ export default function Page() {
   const needsKey = serverInfo?.llmConfigured === false && !llm.settings;
 
   return (
-    <div className="app">
-      <AppHeader
+    /*
+     * 引用来源查看器包在最外层：引用卡片散落在回答气泡、选择题卡、简答题卡里，
+     * 由 provider 统一持有一个弹层，卡片只管喊「打开这个标签」。
+     */
+    <SourceViewerProvider>
+      <div className="app">
+        <AppHeader
         context={s.context}
         status={s.status}
         busy={s.busy}
@@ -132,6 +138,7 @@ export default function Page() {
         onSave={llm.save}
         onClear={llm.clear}
       />
-    </div>
+      </div>
+    </SourceViewerProvider>
   );
 }

@@ -9,6 +9,7 @@ import type {
   Question,
   ShortGrade,
   ShortQuestion,
+  SourceView,
   TraceEvent,
   TraceHandler,
   UrlContext,
@@ -49,6 +50,7 @@ interface AgentHttpError extends Error {
  *   POST /api/agent/ask          { contextId, question, history }     -> { answer, sources, expanded }（流式不可用时的退路）
  *   POST /api/agent/question     { contextId, mode, history }         -> ChoiceQuestion | ShortQuestion（同上）
  *   POST /api/agent/hint         { contextId, type, questionId }      -> { hint }（同上）
+ *   POST /api/agent/source       { contextId, label }                 -> SourceView（引用来源详情）
  *
  * 注：`POST /api/agent/grade` 仍保留（对外契约不变），但客户端已不再使用 ——
  * 判分统一走流式，否则思考轨迹无从下发。详见 gradeChoice 的说明。
@@ -410,6 +412,16 @@ export class HttpAgentClient implements AgentClient {
     );
     if (!result?.hint) throw new Error('服务端没有返回提示');
     return result.hint;
+  }
+
+  /**
+   * 取回引用来源的完整内容。
+   *
+   * 走一次性接口而不是 SSE：服务端只是在自己的索引块里按标签查表，
+   * 没有任何中间步骤可讲 —— 套上流式只会多一层解析，换不来等待期的信息。
+   */
+  async getSource(label: string): Promise<SourceView> {
+    return this.post<SourceView>('/api/agent/source', { contextId: this.session(), label });
   }
 }
 

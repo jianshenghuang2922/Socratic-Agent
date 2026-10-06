@@ -185,6 +185,38 @@ export interface AskResult {
 }
 
 /**
+ * 引用来源的可查看详情 —— 「点开引用文件直接查看」的载荷。
+ *
+ * 前端手里只有一串标签（如 `lib/core/Axios.js › interceptor`），
+ * 光看标签判断不了「它到底是不是有据可查」。这里把标签还原成能直接读的内容。
+ */
+export interface SourceView {
+  /** 原始标签，与 sources 数组里的元素逐字一致 */
+  label: string;
+  /** 内容来自哪类来源 */
+  kind: 'web' | 'repo';
+  /** 块的类型，决定查看器用等宽（代码 / 配置）还是正常排版（文档） */
+  category: 'code' | 'doc' | 'config' | 'meta';
+  /** 展示标题：代码仓库为文件路径，网页为页面标题 */
+  title: string;
+  /** 被引用的章节 / 符号锚点，可能为空 */
+  anchor: string | null;
+  /** 可查看的正文 */
+  text: string;
+  /**
+   * 被引用的那一段在 `text` 中的字符区间。
+   * 仓库是把整份文件拼回来给的，不标出「引用的是哪一段」，用户就得自己找。
+   */
+  focus?: { start: number; end: number };
+  /** 原文链接：网页为页面地址，代码仓库为托管站的文件页（推不出来时为空） */
+  externalUrl?: string;
+  /** 正文是否被服务端的返回上限截断 */
+  truncated?: boolean;
+  /** 正文由几个索引块重组而来（> 1 说明是拼回来的，可能与源文件有细微差异） */
+  chunks: number;
+}
+
+/**
  * 思考轨迹的接收器。
  * 服务端每完成一个中间步骤就回调一次，前端据此实时渲染。
  */
@@ -241,4 +273,13 @@ export interface AgentClient {
    * 与判分互不相干 —— 只返回启发式引导（不给答案），不改动作答状态、不计分。
    */
   requestHint(question: Question, onTrace?: TraceHandler): Promise<string>;
+
+  /**
+   * 取回某条引用来源的完整内容，供用户点开查看。
+   *
+   * `label` 就是 ask / 出题结果里 `sources` 数组的元素。
+   * 服务端只在**已建好的会话索引块**里查表 —— 不重新抓网页、不读磁盘，
+   * 所以这是个廉价操作，不需要 onTrace。
+   */
+  getSource(label: string): Promise<SourceView>;
 }

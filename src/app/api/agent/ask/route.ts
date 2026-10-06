@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { limits } from '@/server/config';
 import { readLlmOverride } from '@/server/byok';
 import { readJson, requireString, toErrorResponse } from '@/server/http';
 import { chat } from '@/server/llm';
@@ -32,7 +33,7 @@ export async function POST(req: Request) {
 
     const answer = await chat(
       askMessages(ctx, question, bundle.text, recentTurns, memoryDigest(ctx)),
-      { temperature: 0.3, maxTokens: 2500, override },
+      { temperature: 0.3, maxTokens: limits.llmMaxTokens, override },
     );
 
     // 用户的问题本身也是「用户回复」，记下来并进索引

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { limits } from '@/server/config';
 import { readLlmOverride } from '@/server/byok';
 import { ApiError, readJson, toErrorResponse } from '@/server/http';
 import { chat } from '@/server/llm';
@@ -74,7 +75,8 @@ export async function POST(req: Request) {
         },
         bundle.text,
       ),
-      { temperature: 0.5, maxTokens: 700, override },
+      // 提示正文很短，但推理模型的推理过程同样计入预算，给 700 会稳定截断
+      { temperature: 0.5, maxTokens: limits.llmMaxTokens, override },
     );
 
     const hint = cleanHint(raw);

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useSourceViewer } from './SourceViewer';
 
 interface Props {
   /** 资料块标签，形如 `lib/core/Axios.js › interceptor` */
@@ -22,9 +23,13 @@ function split(label: string): { path: string; anchor: string | null } {
  * 回答和出题都基于召回的资料，把资料出处摆出来，用户才能判断
  * 「这个回答是有据可查，还是模型自己在编」。
  * 默认只露出前几个，避免一大串路径把对话区淹掉。
+ *
+ * 每个标签都是**可点开的**：只给一串路径，用户没法核实这段内容是否真的
+ * 支撑了上面的结论，溯源就退化成了装饰。点开由 SourceViewerProvider 接管。
  */
 export function SourceList({ sources, visible = 3 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const { openSource } = useSourceViewer();
 
   if (!sources || sources.length === 0) return null;
 
@@ -53,16 +58,23 @@ export function SourceList({ sources, visible = 3 }: Props) {
           />
         </svg>
         <span>依据 {unique.length} 处资料</span>
+        <span className="sources-tip">点击可查看原文</span>
       </div>
 
       <div className="sources-list">
         {shown.map((s) => {
           const { path, anchor } = split(s);
           return (
-            <span key={s} className="source-chip" title={s}>
+            <button
+              key={s}
+              type="button"
+              className="source-chip source-chip--link"
+              title={`查看引用内容：${s}`}
+              onClick={() => openSource(s)}
+            >
               <span className="source-chip__path">{path}</span>
               {anchor && <span className="source-chip__anchor">› {anchor}</span>}
-            </span>
+            </button>
           );
         })}
 

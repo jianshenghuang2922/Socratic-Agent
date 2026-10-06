@@ -14,6 +14,7 @@ import {
 } from '@/server/store';
 import { emitTrace, scoreLabel, type TraceSink } from '@/server/trace';
 import type { LlmOverride } from '@/server/config';
+import { limits } from '@/server/config';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -117,7 +118,7 @@ export async function POST(req: Request) {
         await chatStream(
           askMessages(ctx, question, bundle.text, recentTurns, memoryDigest(ctx, 8, trace)),
           (delta) => send({ type: 'delta', text: delta }),
-          { temperature: 0.3, maxTokens: 2500, override },
+          { temperature: 0.3, maxTokens: limits.llmMaxTokens, override },
         );
 
         // 用户的问题本身也是「用户回复」，记下来并进索引
@@ -165,7 +166,8 @@ export async function POST(req: Request) {
             },
             bundle.text,
           ),
-          { temperature: 0.5, maxTokens: 700, override },
+          // 提示正文很短，但推理模型的推理过程同样计入预算，给 700 会稳定截断
+          { temperature: 0.5, maxTokens: limits.llmMaxTokens, override },
         );
 
         const hint = cleanHint(raw);
@@ -202,7 +204,7 @@ export async function POST(req: Request) {
 
           const raw = await chat(gradeShortMessages(ctx, prompt, reference, answer, bundle.text), {
             temperature: 0.2,
-            maxTokens: 2500,
+            maxTokens: limits.llmMaxTokens,
             override,
           });
 

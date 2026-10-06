@@ -35,12 +35,23 @@ services:
         value: http
 
       # ---- LLM 配置 ----
+      # ⚠️ 这里的值只在「服务由本 blueprint 管理」时才会同步到 Render。
+      #    若服务是手动建的，必须去控制台确认这三个变量，否则改了也不生效。
       - key: LLM_MODEL
-        value: deepseek/deepseek-chat
+        value: inclusionai/ling-3.0-flash-sante:free
+      # ⚠️ 必须填你的账号真能调用的模型，否则降级链等于不存在（一路 402，
+      #    真实原因还会被「所有模型均调用失败」盖住）。
+      #    下面三个是 2026-10-05 实测可用的 :free 模型（免费模型不涉及余额预扣）。
       - key: LLM_FALLBACK_MODELS
-        value: deepseek/deepseek-chat-v3.1,qwen/qwen3-max,z-ai/glm-4.6
+        value: nvidia/nemotron-3-super-120b-a12b:free,qwen/qwen3.8-27b:free,apodex/apodex-1.1-mini:free
       - key: LLM_MAX_RETRIES
         value: "3"
+      # ⚠️ 推理模型的推理过程同样计入这个预算，给 2500 会稳定截断
+      #    （正文为空或 JSON 半截 → 前端报「模型没有返回合法的 JSON」）。
+      - key: LLM_MAX_TOKENS
+        value: "8000"
+      - key: LLM_MAX_TOKENS_CEILING
+        value: "16000"
 
       # ---- 密钥：sync: false 表示不在仓库里存值，由你在 Render 控制台填写 ----
       # ⚠️ 这两项**可以留空**：应用支持「用户自带 API Key」（BYOK），

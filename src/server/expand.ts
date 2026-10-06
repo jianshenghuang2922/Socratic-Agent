@@ -131,7 +131,7 @@ ${vocab.join(', ')}
       [
         { role: 'user', content: prompt },
       ],
-      { temperature: 0.1, maxTokens: 2500, override },
+      { temperature: 0.1, maxTokens: limits.llmMaxTokens, override },
     );
     const draft = extractJson<ExpandDraft>(raw, '查询扩展');
     if (Array.isArray(draft.terms)) {

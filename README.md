@@ -88,8 +88,9 @@ npm run dev              # http://localhost:3000
 | `POST /question` | `{ contextId, mode, history }` | `{ id, type, prompt, options?, sources }` |
 | `POST /grade` | `{ contextId, type, questionId, selectedIndex \| question, answer }` | `ChoiceGrade \| ShortGrade` |
 | `POST /hint` | `{ contextId, type, questionId, question? }` | `{ hint }` —— 「给点提示」：只给启发式引导，不判分、不给答案 |
+| `POST /source` | `{ contextId, label }` | `SourceView` —— 引用来源详情。`label` 就是 `sources` 数组里的元素；仓库按文件聚合全部索引块并把被引用段标进 `focus`，网页只给被引用章节 |
 
-状态码：`400` 参数错误 · `410` 会话或答案键失效 · `502` 上游失败。
+状态码：`400` 参数错误 · `404` 该引用来源查不到 · `410` 会话或答案键失效 · `502` 上游失败。
 
 所有 `POST` 端点都接受可选的 `x-llm-api-key` / `x-llm-base-url` / `x-llm-model` 请求头（BYOK），
 带了就用这份凭据调模型，没带就用服务端 `.env` 里的。

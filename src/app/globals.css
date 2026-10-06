@@ -900,6 +900,168 @@ textarea {
   white-space: nowrap;
 }
 
+/* 可点开的引用：按钮重置成 chip 外观，但保留键盘焦点与 hover 反馈 */
+.source-chip--link {
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  transition: border-color 0.18s, background 0.18s, color 0.18s, box-shadow 0.18s;
+}
+
+.source-chip--link:hover {
+  background: rgba(91, 140, 255, 0.22);
+  border-color: var(--accent);
+  color: #eaf0ff;
+  box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.12);
+}
+
+.source-chip--link:hover .source-chip__path {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.source-chip--link:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--glow);
+}
+
+.sources-tip {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+/* ============================================================
+   引用来源查看器
+   ============================================================ */
+
+.modal-card--viewer {
+  max-width: 880px;
+}
+
+.viewer-head-text {
+  min-width: 0;
+}
+
+.viewer-title {
+  font-family: var(--mono);
+  font-size: 14.5px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.viewer-anchor {
+  font-family: var(--mono);
+  color: var(--accent-2);
+}
+
+.viewer-note {
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+.viewer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 24px 8px;
+}
+
+/*
+ * 免责说明做成吸顶：正文会自动滚到被引用的那一段（可能在几千行之外），
+ * 说明如果跟着滚走，用户就看不到「这是索引片段重组的、不是原文」这个前提了。
+ *
+ * 背景必须**不透明** —— 用玻璃色（半透明）时下面的代码会透上来，
+ * 和说明文字叠在一起，反而更读不清。
+ */
+.viewer-caveat {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -24px 10px;
+  padding: 9px 24px 8px;
+  background: #0a0e1c;
+  border-bottom: 1px solid var(--stroke);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.viewer-state {
+  padding: 34px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.viewer-state--error {
+  color: var(--bad);
+}
+
+.viewer-state--error p {
+  margin: 0 0 12px;
+}
+
+.viewer-code,
+.viewer-doc {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(5, 7, 15, 0.62);
+  border: 1px solid var(--stroke);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.viewer-code {
+  font-family: var(--mono);
+  font-size: 12px;
+  tab-size: 2;
+}
+
+.viewer-hit {
+  background: rgba(91, 140, 255, 0.24);
+  color: #eaf0ff;
+  box-shadow: inset 2px 0 0 var(--accent);
+  border-radius: 3px;
+  /* 吸顶的说明条会盖住视口顶部，滚动定位时给它让出位置 */
+  scroll-margin-top: 56px;
+}
+
+.viewer-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 24px 18px;
+  border-top: 1px solid var(--stroke);
+}
+
+.viewer-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.viewer-foot a {
+  flex: none;
+  text-decoration: none;
+}
+
 .source-more {
   border: 1px dashed var(--stroke-2);
   background: transparent;

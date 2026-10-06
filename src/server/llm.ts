@@ -40,6 +40,15 @@ interface AttemptResult {
   retryable: boolean;
   detail: string;
   content?: string;
+  /**
+   * 输出被 `max_tokens` 截断（`finish_reason: 'length'`）。
+   *
+   * 单独标出来是因为**截断的重试方式和其他失败不一样**：原地重试等于必然再截断一次，
+   * 必须先把预算翻倍。推理模型上这一点尤其致命 —— 它的推理过程同样计入
+   * `max_tokens`，光推理就能吃掉 1300~4000 token，预算给 2500 时会稳定出现
+   * 「推理没结束预算就没了」，正文要么为空，要么 JSON 被切成半截。
+   */
+  truncated?: boolean;
   /** 流式专用：是否已经往客户端吐过字。吐过就不能重试/换模型，否则内容会重复 */
   emitted?: boolean;
 }
@@ -122,26 +131,32 @@ async function attemptOnce(
 
   const choice = data.choices?.[0];
   const content = choice?.message?.content;
+  /*
+   * 截断必须判成失败，**即使正文非空**。
+   * 非空但被截断的正文，对「要求输出 JSON」的出题 / 判分 / 查询扩展来说
+   * 一律是坏数据（缺右括号，解析必然失败）；如果在这里当成成功返回，
+   * 调用方只会拿到一个解析不了的半截 JSON，重试的机会被白白吞掉。
+   */
+  const truncated = choice?.finish_reason === 'length';
 
-  if (typeof content === 'string' && content.trim()) {
+  if (!truncated && typeof content === 'string' && content.trim()) {
     return { ok: true, status: response.status, retryable: false, detail: '', content: content.trim() };
   }
 
-  // 走到这里说明 content 为空 —— 推理模型最常见的两种失败形态
+  // 走到这里说明输出不可用 —— 推理模型最常见的两种失败形态
   const hasReasoning = Boolean(
     choice?.message?.reasoning?.trim() || choice?.message?.reasoning_content?.trim(),
   );
 
-  const detail =
-    choice?.finish_reason === 'length'
-      ? hasReasoning
-        ? `输出被 max_tokens 截断（当前 ${maxTokens}）。该模型是推理模型，推理过程会消耗大量 token，请调大预算或改用非推理模型。`
-        : `输出被 max_tokens 截断（当前 ${maxTokens}），请调大预算。`
-      : hasReasoning
-        ? '只输出了推理过程、没有给出正文'
-        : '返回了空内容';
+  const detail = truncated
+    ? hasReasoning
+      ? `输出被 max_tokens 截断（当前 ${maxTokens}）。该模型是推理模型，推理过程会消耗大量 token，需要调大预算。`
+      : `输出被 max_tokens 截断（当前 ${maxTokens}），需要调大预算。`
+    : hasReasoning
+      ? '只输出了推理过程、没有给出正文'
+      : '返回了空内容';
 
-  return { ok: false, status: response.status, retryable: true, detail };
+  return { ok: false, status: response.status, retryable: true, truncated, detail };
 }
 
 /**
@@ -158,17 +173,21 @@ export async function chat(messages: ChatMessage[], options: ChatOptions = {}): 
   const { temperature = 0.3, maxTokens = 3000, timeoutMs = 90_000 } = options;
   const models = [cfg.model, ...cfg.fallbackModels];
   const failures: string[] = [];
+  /** 截断时能爬到的上限；不低于调用方给的预算，否则「升级」反而会缩水 */
+  const ceiling = Math.max(maxTokens, limits.llmMaxTokensCeiling);
 
   for (let mi = 0; mi < models.length; mi++) {
     const model = models[mi];
     let last: AttemptResult = { ok: false, status: 0, retryable: false, detail: '未执行' };
+    /** 本模型的当前预算。被截断就翻倍，换模型时重置 */
+    let budget = maxTokens;
 
     for (let attempt = 1; attempt <= cfg.maxRetries; attempt++) {
       const result = await attemptOnce(model, messages, {
         apiKey: cfg.apiKey,
         baseUrl: cfg.baseUrl,
         temperature,
-        maxTokens,
+        maxTokens: budget,
         timeoutMs,
       });
 
@@ -181,6 +200,16 @@ export async function chat(messages: ChatMessage[], options: ChatOptions = {}): 
       if (!result.retryable) break; // 业务错误（模型名错 / 区域限制）重试无意义
 
       if (attempt < cfg.maxRetries) {
+        /*
+         * 截断是确定性的：同样的预算再问一遍只会同样截断，等待也毫无意义。
+         * 直接翻倍预算重试，这是推理模型唯一有效的自愈路径。
+         */
+        if (result.truncated && budget < ceiling) {
+          const next = Math.min(ceiling, budget * 2);
+          console.warn(`[llm] ${model} 输出被截断，预算 ${budget} → ${next} 后重试`);
+          budget = next;
+          continue;
+        }
         const wait = Math.min(8000, 600 * 2 ** (attempt - 1)) + Math.round(Math.random() * 300);
         console.warn(
           `[llm] ${model} 第 ${attempt} 次失败（${result.status || '网络'}）：${result.detail}；${wait}ms 后重试`,
@@ -308,6 +337,8 @@ async function streamOnce(
   let buffer = '';
   let content = '';
   let emitted = false;
+  /** 上游给出的结束原因，`length` 说明被 max_tokens 截断 */
+  let finishReason: string | undefined;
 
   try {
     for (;;) {
@@ -326,13 +357,16 @@ async function streamOnce(
         if (!payload || payload === '[DONE]') continue;
 
         let chunk: ChatCompletionResponse & {
-          choices?: Array<{ delta?: { content?: string | null } }>;
+          choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string }>;
         };
         try {
           chunk = JSON.parse(payload) as typeof chunk;
         } catch {
           continue; // 半行 JSON，等下一片
         }
+
+        // finish_reason 通常只在最后一个 chunk 里出现
+        if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
 
         const delta = chunk.choices?.[0]?.delta?.content;
         if (typeof delta === 'string' && delta) {
@@ -348,6 +382,22 @@ async function streamOnce(
       status: 0,
       retryable: !emitted,
       detail: describeNetworkError(err, '读取模型输出流'),
+      content,
+      emitted,
+    };
+  }
+
+  /*
+   * 被截断的流不能当成功 —— 用户看到的是半截回答。
+   * 已经吐过字就只能认输（重来会把内容接成两段），一个字没吐则值得换更大预算重试。
+   */
+  if (finishReason === 'length') {
+    return {
+      ok: false,
+      status: 200,
+      retryable: !emitted,
+      truncated: true,
+      detail: `输出被 max_tokens 截断（当前 ${maxTokens}），需要调大预算。`,
       content,
       emitted,
     };
@@ -377,6 +427,7 @@ export async function chatStream(
   const { temperature = 0.3, maxTokens = 3000, timeoutMs = 90_000 } = options;
   const models = [cfg.model, ...cfg.fallbackModels];
   const failures: string[] = [];
+  const ceiling = Math.max(maxTokens, limits.llmMaxTokensCeiling);
 
   for (let mi = 0; mi < models.length; mi++) {
     const model = models[mi];
@@ -388,12 +439,13 @@ export async function chatStream(
       content: '',
       emitted: false,
     };
+    let budget = maxTokens;
 
     for (let attempt = 1; attempt <= cfg.maxRetries; attempt++) {
       const result = await streamOnce(
         model,
         messages,
-        { apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, temperature, maxTokens, timeoutMs },
+        { apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, temperature, maxTokens: budget, timeoutMs },
         onDelta,
       );
 
@@ -406,12 +458,24 @@ export async function chatStream(
 
       // 已经吐过字：重试或换模型都会造成内容重复，只能认输
       if (result.emitted) {
-        throw new ApiError(502, `模型输出中断（${result.detail}），请重试`);
+        throw new ApiError(
+          502,
+          result.truncated
+            ? `回答被 max_tokens 截断（当前 ${budget}），已显示的部分无法续写。请调大 LLM_MAX_TOKENS 或改用非推理模型后重试。`
+            : `模型输出中断（${result.detail}），请重试`,
+        );
       }
 
       if (!result.retryable) break;
 
       if (attempt < cfg.maxRetries) {
+        // 同非流式：截断是确定性的，等待没有意义，翻倍预算直接重来
+        if (result.truncated && budget < ceiling) {
+          const next = Math.min(ceiling, budget * 2);
+          console.warn(`[llm] ${model} 流式输出被截断，预算 ${budget} → ${next} 后重试`);
+          budget = next;
+          continue;
+        }
         const wait = Math.min(8000, 600 * 2 ** (attempt - 1)) + Math.round(Math.random() * 300);
         console.warn(
           `[llm] ${model} 流式第 ${attempt} 次失败（${result.status || '网络'}）：${result.detail}；${wait}ms 后重试`,

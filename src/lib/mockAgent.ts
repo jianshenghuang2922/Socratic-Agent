@@ -7,6 +7,7 @@ import type {
   Question,
   ShortGrade,
   ShortQuestion,
+  SourceView,
   TraceHandler,
   UrlContext,
 } from './types';
@@ -384,5 +385,55 @@ export class MockAgentClient implements AgentClient {
         : '试着先想清楚「它一共做了哪几件事」，再按先后顺序把它们串起来；对照资料原文逐个核对，别漏掉中间那一步。';
     onTrace?.({ stage: '提示', detail: '引导已就绪（仅启发思路，作答状态与计分不受影响）。' });
     return hint;
+  }
+
+  /**
+   * 引用来源详情。
+   *
+   * Mock 下没有真实索引可查，就按标签合成一份同构的内容 ——
+   * 关键不是内容像不像真的，而是**形状必须和真实后端一致**
+   * （kind / title / anchor / focus / chunks 都得到位），
+   * 否则查看器在本地联调时走的分支和线上不一样，「点开能不能用」就验不出来。
+   */
+  async getSource(label: string): Promise<SourceView> {
+    await sleep(220);
+
+    const i = label.indexOf('›');
+    const filePart = (i < 0 ? label : label.slice(0, i)).trim();
+    const anchor = i < 0 ? null : label.slice(i + 1).trim() || null;
+
+    const kb = this.lastWasRepo ? REPO_KNOWLEDGE : WEB_KNOWLEDGE;
+
+    if (!this.lastWasRepo) {
+      return {
+        label,
+        kind: 'web',
+        category: 'doc',
+        title: filePart,
+        anchor,
+        text: kb.facts.join('\n\n'),
+        externalUrl: 'https://example.local/mock-doc',
+        chunks: 1,
+      };
+    }
+
+    // 仓库：两块拼成「整份文件」，并标出被引用的那一段 —— 与真实后端的形态对齐
+    const head = `/* ${filePart} —— 模拟文件内容 */\n// Mock 只用于联调，内容不代表真实仓库。`;
+    const cited = kb.facts[0];
+    const tail = kb.facts.slice(1).join('\n\n');
+    const text = [head, cited, tail].join('\n\n');
+
+    return {
+      label,
+      kind: 'repo',
+      category: 'code',
+      title: filePart,
+      anchor,
+      text,
+      // 被引用的就是中间那段
+      focus: { start: head.length + 2, end: head.length + 2 + cited.length },
+      externalUrl: undefined,
+      chunks: 3,
+    };
   }
 }

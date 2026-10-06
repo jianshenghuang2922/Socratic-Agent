@@ -15,6 +15,7 @@
  */
 
 import type { LlmOverride } from './config';
+import { limits } from './config';
 import { ApiError } from './http';
 import { chat, extractJson } from './llm';
 import { choiceQuestionMessages, shortQuestionMessages } from './prompts';
@@ -113,7 +114,9 @@ export async function generateQuestionAttempt(
 
   const raw = await chat(messages, {
     temperature: attempt === 0 ? 0.9 : 1.0,
-    maxTokens: 2500,
+    // 出题要求模型输出结构化 JSON，必须给推理模型留够推理预算 ——
+    // 预算不够时正文会被截成半截 JSON，前端看到的就是「没有返回合法的 JSON」。
+    maxTokens: limits.llmMaxTokens,
     override,
   });
 
@@ -265,7 +268,15 @@ function parseShortDraft(raw: string) {
   return { prompt, reference };
 }
 
-/** 自检类失败才值得重出；会话失效、网关故障重试没有意义 */
+/**
+ * 自检类失败才值得重出；会话失效、网关故障重试没有意义。
+ *
+ * 「没有返回合法的 JSON」也算 —— 模型偶尔会漏个括号、或把解析写在 JSON 之外。
+ * 换一批资料、换一个知识点重出一次，往往就正常了；
+ * 不把它算进来的话，一次输出抖动就会把整轮出题判死（用户只能手动再点一次）。
+ */
 export function isQuestionRetryable(err: ApiError): boolean {
-  return /重复出题|没有锚定|缺少题干|选项不足|下标越界|参考答案/.test(err.message);
+  return /重复出题|没有锚定|缺少题干|选项不足|下标越界|参考答案|没有返回合法的 JSON/.test(
+    err.message,
+  );
 }
