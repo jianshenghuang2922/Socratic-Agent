@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { limits } from '@/server/config';
 import { readLlmOverride } from '@/server/byok';
-import { readJson, requireString, toErrorResponse } from '@/server/http';
+import { readJson, requireString } from '@/server/http';
+import { claimTrial, toErrorResponseWithTrial, type TrialClaim } from '@/server/trial';
 import { chat } from '@/server/llm';
 import { askMessages, summarizeHistory } from '@/server/prompts';
 import { contextForAsk, memoryDigest } from '@/server/rag';
@@ -21,11 +22,15 @@ export const maxDuration = 120;
  * 凭据：默认用服务端的；请求头带了 x-llm-* 就用用户自带的（BYOK）。
  */
 export async function POST(req: Request) {
+  let claim: TrialClaim | null = null;
   try {
     const override = readLlmOverride(req);
     const body = await readJson<{ contextId?: string; question?: string; history?: unknown }>(req);
     const question = requireString(body.question, 'question', 4000);
     const ctx = requireContext(body.contextId);
+
+    // 参数校验通过才占额度：畸形请求不该消耗用户的免费次数
+    claim = claimTrial(req, override);
 
     const { recentTurns, recentUserTurns } = summarizeHistory(body.history);
 
@@ -47,6 +52,8 @@ export async function POST(req: Request) {
       expanded: bundle.expanded ?? [],
     });
   } catch (err) {
-    return toErrorResponse(err);
+    // 这次调用没产出任何东西，额度退回去
+    claim?.refund();
+    return toErrorResponseWithTrial(err, req);
   }
 }

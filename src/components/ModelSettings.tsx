@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { LLM_PRESETS, maskKey, type LlmSettings } from '@/lib/llmSettings';
 import type { ServerLlmInfo } from '@/hooks/useLlmSettings';
+import type { TrialQuota } from '@/lib/trial';
 
 interface Props {
   open: boolean;
@@ -11,6 +12,8 @@ interface Props {
   settings: LlmSettings | null;
   /** 服务端凭据状态；null 表示还没探测出来 */
   serverInfo: ServerLlmInfo | null;
+  /** 实时免费额度，用于说清「填了 Key 就不再受限」 */
+  trial: TrialQuota | null;
   onSave: (next: LlmSettings) => void;
   onClear: () => void;
 }
@@ -24,7 +27,15 @@ interface Props {
  *
  * 凭据只存本机浏览器，随请求头发到服务端，服务端只在单次请求里用它调模型。
  */
-export function ModelSettings({ open, onClose, settings, serverInfo, onSave, onClear }: Props) {
+export function ModelSettings({
+  open,
+  onClose,
+  settings,
+  serverInfo,
+  trial,
+  onSave,
+  onClear,
+}: Props) {
   const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? '');
   const [apiKey, setApiKey] = useState(settings?.apiKey ?? '');
   const [model, setModel] = useState(settings?.model ?? '');
@@ -114,9 +125,24 @@ export function ModelSettings({ open, onClose, settings, serverInfo, onSave, onC
             </div>
           )}
           {serverInfo?.llmConfigured && (
-            <div className="modal-note">
-              本部署已配置服务端模型（{serverInfo.model}）。不填这里也能用；
-              填了则<strong>优先使用你自己的 Key</strong>。
+            <div className={`modal-note${trial?.available && trial.remaining <= 0 ? ' modal-note--warn' : ''}`}>
+              {trial?.available && trial.remaining > 0 ? (
+                <>
+                  本部署已配置服务端模型（{serverInfo.model}）。不填这里也能用 ——
+                  你还有 <strong>{trial.remaining}</strong> 次免费额度；
+                  填了则<strong>优先使用你自己的 Key</strong>，不再受额度限制。
+                </>
+              ) : trial?.available ? (
+                <>
+                  本部署的<strong>免费额度已用完</strong>。填入你自己的 API Key
+                  才能继续提问与出题，填了不受任何额度限制。
+                </>
+              ) : (
+                <>
+                  本部署已配置服务端模型（{serverInfo.model}）。不填这里也能用；
+                  填了则<strong>优先使用你自己的 Key</strong>。
+                </>
+              )}
             </div>
           )}
 

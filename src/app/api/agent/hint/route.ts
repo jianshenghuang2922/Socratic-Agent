@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { limits } from '@/server/config';
 import { readLlmOverride } from '@/server/byok';
-import { ApiError, readJson, toErrorResponse } from '@/server/http';
+import { ApiError, readJson } from '@/server/http';
+import { claimTrial, toErrorResponseWithTrial, type TrialClaim } from '@/server/trial';
 import { chat } from '@/server/llm';
 import { hintMessages } from '@/server/prompts';
 import { contextForAsk } from '@/server/rag';
@@ -35,6 +36,7 @@ interface HintBody {
  *  - 返回的是纯文本引导，不是结构化判分结果。
  */
 export async function POST(req: Request) {
+  let claim: TrialClaim | null = null;
   try {
     const override = readLlmOverride(req);
     const body = await readJson<HintBody>(req);
@@ -58,6 +60,13 @@ export async function POST(req: Request) {
     } else if (!key.reference?.trim()) {
       throw new ApiError(410, '题目答案已失效，请重新出题');
     }
+
+    /*
+     * 占额度必须在 contextForAsk **之前** —— 检索里的查询扩展本身就会调一次模型，
+     * 放到后面等于「扩展烧了上游额度却不计数」。
+     * 题目与答案键都校验通过才走到这里，畸形请求不会消耗用户次数。
+     */
+    claim = claimTrial(req, override);
 
     // 只喂与题目相关的资料片段，提示才能落到具体名称上
     const bundle = await contextForAsk(ctx, prompt, [], override);
@@ -84,7 +93,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ hint });
   } catch (err) {
-    return toErrorResponse(err);
+    // 没给出提示，额度退回去
+    claim?.refund();
+    return toErrorResponseWithTrial(err, req);
   }
 }
 

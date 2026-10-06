@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { buildContext } from '@/server/context';
-import { readJson, requireString, toErrorResponse } from '@/server/http';
+import { readLlmOverride } from '@/server/byok';
+import { readJson, requireString } from '@/server/http';
+import { claimTrial, toErrorResponseWithTrial, type TrialClaim } from '@/server/trial';
 
 export const runtime = 'nodejs';
 /** 克隆仓库可能较慢，放宽执行上限 */
@@ -19,11 +21,19 @@ export const maxDuration = 300;
  * 这类回归都依赖它。需要看到进度请用 `POST /api/agent/context/stream`。
  */
 export async function POST(req: Request) {
+  let claim: TrialClaim | null = null;
   try {
     const body = await readJson<{ url?: string }>(req);
     const url = requireString(body.url, 'url', 2048);
+    /*
+     * 参数校验通过才占额度：畸形请求不该消耗用户的免费次数。
+     * 必须把 override 传进去 —— 带了自带 Key 的请求不占服务端额度，
+     * 否则「填了 Key 就不受限」这句承诺就是假的。
+     */
+    claim = claimTrial(req, readLlmOverride(req));
     return NextResponse.json(await buildContext(url));
   } catch (err) {
-    return toErrorResponse(err);
+    claim?.refund();
+    return toErrorResponseWithTrial(err, req);
   }
 }

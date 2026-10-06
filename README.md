@@ -1,6 +1,10 @@
 # Socratic Agent
 
-基于 URL 内容的智能问答 Agent。给它一个**网页**或**代码仓库**地址，它会读取内容、建立可检索的索引，然后你可以直接提问，也可以让它针对这份内容出题考你。
+**丢一个链接，它出题考你有没有真读懂。**
+
+给它一个**网页**或**代码仓库**地址，它读完内容后出题考你 —— 选择题或简答题，
+题干锚定资料里真实存在的文件、函数和段落，而不是通用八股。答错的题会成为后续出题的靶子。
+也可以直接对它提问，答案来自检索到的原文。
 
 ## 线上地址
 
@@ -18,8 +22,37 @@
 - **判分** —— 选择题纯服务端比对（不调模型），简答题由模型批改
 - **计分** —— 答对 +5 分，并累计出题数
 - **自带 API Key（BYOK）** —— 公开部署不必共享一个模型 Key，每个用户填自己的即可（见下节）
+- **免费试用额度** —— 没带 Key 的访客先用服务端凭据免费试几次，用完再引导他填自己的 Key（见下节）
 
-## 用自己的 API Key（BYOK）
+## 免费额度与自带 Key（BYOK）
+
+公开部署的凭据策略有两条硬约束，缺一不可：
+
+1. **不能挂一个共享的付费 Key 且不限量** —— 几分钟就会被刷爆；
+2. **不能一进门就要用户填 Key** —— 等于要他拿信用卡换空气，他还没看到任何价值。
+
+所以这里做成两段式：**先给一小份免费额度，用完再引导自带 Key**。
+
+### 免费额度怎么算
+
+- 计数口径是「**一次会调用模型的动作**」：解析链接 / 提问 / 出题 / 给提示 / 简答题判分。
+  与内部重试次数无关 —— 一次提问内部可能重试 3 次、换 2 个模型，对用户仍然是「一次」。
+- **选择题判分不占额度**：它是纯服务端比对答案键，零延迟零成本，对它收额度用户会立刻察觉不对。
+- **失败会退还**：上游 429 / 超时 / 模型输出不合规，只要没产出用户可见的结果就把额度退回去。
+  免费模型限流是常态，不退的话用户会被白扣到零 —— 比没有额度更糟。
+- 窗口是**滚动 24 小时**（从首次使用起算），不是自然日，省掉时区与跨零点重置的歧义。
+- 两层限制：`TRIAL_DAILY_LIMIT`（单 IP）+ `TRIAL_GLOBAL_DAILY_LIMIT`（全站合计）。
+  全局那层不是冗余 —— IP 取自 `x-forwarded-for`，**客户端可伪造**，
+  全局上限才是不依赖任何客户端输入的硬约束。
+
+> ⚠️ **默认值给得很小（单 IP 10 次 / 全站 30 次），这是有意的。**
+> OpenRouter 免费档是 20 请求/分钟 + **50 请求/天**（充值满 $10 才升到 1000/天）。
+> 一次用户动作可能触发 2~3 次上游调用（查询改写 + 重试 + 换模型），
+> 所以 50/天大约只够 **15~20 次用户动作，还是全站合计**。
+> 这个额度是「让人看到第一道题」，不是「免费用一天」。
+> 想真正放开，先给账号充值提额，再把 `TRIAL_GLOBAL_DAILY_LIMIT` 同步调大。
+
+### 用自己的 API Key（BYOK）
 
 线上部署默认**不带**共享的模型密钥 —— 一个公开地址挂一个付费 Key，几分钟就会被刷爆。
 所以应用支持让每个用户填自己的 Key：
@@ -34,7 +67,10 @@ Key 只存在**你自己的浏览器**（localStorage），随每次请求通过
 几个行为约定：
 
 - **填了自带 Key 就优先用它**，服务端的凭据被忽略，且不再走跨网关的备用模型链（那串备用模型是给服务端网关准备的）。
+- **填了自带 Key 就不占免费额度**，也不受任何额度限制 —— 用的本来就是用户自己的账号配额。
 - 服务端没配凭据、用户也没填时，接口返回的是「请点击右上角模型设置」这类可操作提示，而不是一句裸的 500。
+- 额度用尽时接口返回 **429** 且带 `code: "trial_exhausted"`，响应体里还有最新的 `trial` 状态，
+  前端据此当场把计数归零并引导去填 Key，不用再打一次 `/config`。
 - 自定义网关地址**不允许指向内网 / 本机**（否则本站就成了 SSRF 跳板）。本地开发要连 Ollama 之类的内网网关，在服务端设 `ALLOW_PRIVATE_LLM_BASE_URL=1`。
 - 前端默认走真实后端。只有显式设置 `NEXT_PUBLIC_AGENT_MODE=mock` 才会启用内置模拟数据 —— 用户一旦填了自带 Key，即使处于 `mock` 模式也会切到真实后端。
 
@@ -64,8 +100,12 @@ npm run dev              # http://localhost:3000
 | `LLM_FALLBACK_MODELS` | 备用模型链，主模型被限流/故障时依次降级（用户自带 Key 时不生效） |
 | `LLM_MAX_RETRIES` | 单个模型的尝试次数，默认 3 |
 | `NEXT_PUBLIC_AGENT_MODE` | `http` 走真实后端，`mock` 用内置模拟数据；**不设则默认 `http`**。编译期内联，改后必须重新构建 |
+| `NEXT_PUBLIC_SITE_URL` | 站点根地址，用于生成 canonical 与 OG 图片的绝对地址。不设则默认 `https://socratic-agent-th9l.onrender.com`。同样是编译期内联，换域名后必须重新构建 |
 | `ALLOW_PRIVATE_LLM_BASE_URL` | 设为 `1` 允许用户把自定义网关指向内网/本机（本地开发连 Ollama 时用） |
 | `RAG_EXPAND_QUERY` | 设为 `0` 关闭 LLM 查询扩展（省额度） |
+| `TRIAL_ENABLED` | 设为 `0` 关闭免费额度（**不要**用把额度设成 0 的方式关，`int()` 会把非正数回落到默认值） |
+| `TRIAL_DAILY_LIMIT` | 单个 IP 在 24 小时内可用几次免费额度，默认 10。必须和账号自己的上游配额对齐，见上文 |
+| `TRIAL_GLOBAL_DAILY_LIMIT` | 全站合计的 24 小时上限，默认 30。护住服务端账号的硬约束 |
 | `INDEX_BUDGET_CHARS` | 建索引时读入的字符上限 |
 | `ANALYSIS_TIMEOUT_SECONDS` | 仓库分析总超时，默认 900 |
 
@@ -81,16 +121,23 @@ npm run dev              # http://localhost:3000
 
 | 端点 | 请求体 | 响应 |
 | --- | --- | --- |
-| `GET /config` | — | `{ llmConfigured, model, byok }`，前端据此决定要不要引导用户填自己的 Key |
+| `GET /config` | — | `{ llmConfigured, model, byok, trial }`，前端据此决定要不要引导用户填自己的 Key |
 | `POST /context` | `{ url }` | `{ contextId, url, kind, title, summary, size, chunks }` |
 | `POST /ask` | `{ contextId, question, history }` | `{ answer, sources, expanded }` |
-| `POST /ask/stream` | 同上 | SSE：`status` / `sources` / `delta` / `done` / `error` |
+| `POST /ask/stream` | 同上 | SSE：`status` / `sources` / `delta` / `result` / `quota` / `done` / `error` |
 | `POST /question` | `{ contextId, mode, history }` | `{ id, type, prompt, options?, sources }` |
 | `POST /grade` | `{ contextId, type, questionId, selectedIndex \| question, answer }` | `ChoiceGrade \| ShortGrade` |
 | `POST /hint` | `{ contextId, type, questionId, question? }` | `{ hint }` —— 「给点提示」：只给启发式引导，不判分、不给答案 |
 | `POST /source` | `{ contextId, label }` | `SourceView` —— 引用来源详情。`label` 就是 `sources` 数组里的元素；仓库按文件聚合全部索引块并把被引用段标进 `focus`，网页只给被引用章节 |
 
-状态码：`400` 参数错误 · `404` 该引用来源查不到 · `410` 会话或答案键失效 · `502` 上游失败。
+状态码：`400` 参数错误 · `404` 该引用来源查不到 · `410` 会话或答案键失效 · `429` 免费额度用尽 · `502` 上游失败。
+
+`429` 的响应体是 `{ error, code: "trial_exhausted", trial: {...} }`；
+`trial` 的字段是 `{ available, limit, used, remaining, resetsInMs }`。
+
+流式端点在每个动作结束时（成功与失败都算）会发一条
+`{ "type": "quota", "trial": {...} }`，前端据此刷新额度显示 ——
+这样就不必在每次动作后再打一次 `/config`，那一次往返恰好发生在用户最不耐烦的时刻。
 
 所有 `POST` 端点都接受可选的 `x-llm-api-key` / `x-llm-base-url` / `x-llm-model` 请求头（BYOK），
 带了就用这份凭据调模型，没带就用服务端 `.env` 里的。

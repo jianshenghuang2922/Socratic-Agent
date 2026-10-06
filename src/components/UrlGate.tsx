@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { AgentMode } from '@/lib/agent';
+import type { TrialQuota } from '@/lib/trial';
 
 interface Props {
   loading: boolean;
@@ -9,14 +10,22 @@ interface Props {
   agentMode: AgentMode;
   /** 服务端没配 Key、用户也没填 —— 此时必须先引导他填，否则一提问就报错 */
   needsKey: boolean;
+  /** 免费试用额度；null 表示还没探测到 */
+  trial: TrialQuota | null;
   onOpenSettings: () => void;
   onSubmit: (url: string) => void;
 }
 
+/**
+ * 示例必须「小而快」。
+ * 线上是 512MB 的免费实例，浅克隆 + 建索引大 monorepo（比如 vercel/next.js）
+ * 会直接超时或 OOM —— 用户第一次点下去就撞墙，是最贵的流失点。
+ * 加示例之前先实测一遍解析耗时，别凭仓库名气挑。
+ */
 const SAMPLES = [
-  { label: 'Socratic-Agent', url: 'https://github.com/jianshenghuang2922/Socratic-Agent'},
+  { label: 'Socratic-Agent 自己', url: 'https://github.com/jianshenghuang2922/Socratic-Agent' },
+  { label: 'github.com/ai/nanoid', url: 'https://github.com/ai/nanoid' },
   { label: '维基百科 · 苏格拉底', url: 'https://zh.wikipedia.org/wiki/苏格拉底' },
-  { label: 'github.com/vercel/next.js', url: 'https://github.com/vercel/next.js' },
 ];
 
 function normalize(raw: string): string | null {
@@ -33,7 +42,15 @@ function normalize(raw: string): string | null {
 }
 
 /** URL 输入区：首次进入页面时展示，提交后建立问答上下文 */
-export function UrlGate({ loading, error, agentMode, needsKey, onOpenSettings, onSubmit }: Props) {
+export function UrlGate({
+  loading,
+  error,
+  agentMode,
+  needsKey,
+  trial,
+  onOpenSettings,
+  onSubmit,
+}: Props) {
   const [value, setValue] = useState('');
   const [localError, setLocalError] = useState('');
 
@@ -47,33 +64,63 @@ export function UrlGate({ loading, error, agentMode, needsKey, onOpenSettings, o
     onSubmit(url);
   };
 
+  /*
+   * 入口的三种状态，决定「进门先说哪句话」：
+   *   1. 有免费额度 ⇒ 直接放进来用（**绝不能在这个位置要 Key**，用户还没看到任何价值）；
+   *   2. 额度用尽   ⇒ 说明白并引导自带 Key；
+   *   3. 服务端没凭据 ⇒ 只能引导自带 Key。
+   * 第 1 种是绝大多数访客会遇到的路径，也是转化率的关键 ——
+   * 之前这里只有 2 和 3，等于让每个新访客先交一份 Key 才能看到东西。
+   */
+  const trialExhausted = trial?.available === true && trial.remaining <= 0;
+  const blocked = needsKey || trialExhausted;
+
   return (
     <div className="gate">
       <div className="gate-card">
         <div className="gate-badge">V1.1</div>
-        <h1 className="gate-title">基于 URL 的智能问答 Agent</h1>
+        <h1 className="gate-title">丢一个链接，它出题考你</h1>
         <p className="gate-sub">
-          输入一个<strong>网页</strong>或<strong>代码仓库</strong>的 URL，我会读取它的内容并建立问答上下文。
-          之后你可以直接提问，也可以让我基于内容出题考你。
+          粘贴一个<strong>网页</strong>或<strong>代码仓库</strong>地址。它读完内容后出题考你 ——
+          题干锚定原文里真实存在的段落与函数，答错的题会成为后续出题的靶子。
         </p>
 
-        {needsKey ? (
+        {blocked ? (
           <div className="gate-key">
             <div className="gate-key__text">
-              本部署没有配置服务端模型凭据。<strong>填入你自己的 API Key</strong>
-              即可正常提问与出题 —— Key 只存在你的浏览器里。
+              {needsKey ? (
+                <>
+                  本部署没有配置服务端模型凭据。<strong>填入你自己的 API Key</strong>
+                  即可正常提问与出题 —— Key 只存在你的浏览器里。
+                </>
+              ) : (
+                <>
+                  免费额度已用完（{trial?.limit ?? 0} 次 / 24 小时）。
+                  <strong>填入你自己的 API Key</strong> 即可继续，不受此限制 ——
+                  Key 只存在你的浏览器里。
+                </>
+              )}
             </div>
             <button type="button" className="btn btn--primary btn--sm" onClick={onOpenSettings}>
               去填 API Key
             </button>
           </div>
         ) : (
-          <div className={`gate-mode gate-mode--${agentMode === 'mock' ? 'mock' : 'live'}`}>
-            <span className="gate-mode__dot" />
-            {agentMode === 'mock'
-              ? '当前为模拟模式（前端联调数据），回答不来自真实模型'
-              : '当前为真实 Agent，将调用大模型作答'}
-          </div>
+          <>
+            <div className={`gate-mode gate-mode--${agentMode === 'mock' ? 'mock' : 'live'}`}>
+              <span className="gate-mode__dot" />
+              {agentMode === 'mock'
+                ? '当前为模拟模式（前端联调数据），回答不来自真实模型'
+                : '当前为真实 Agent，将调用大模型作答'}
+            </div>
+
+            {trial?.available && (
+              <div className="gate-quota">
+                免费额度 剩余 <strong>{trial.remaining}</strong> / {trial.limit} 次（24 小时内）
+                <span className="gate-quota__hint">用完后可在右上角填自己的 Key 继续</span>
+              </div>
+            )}
+          </>
         )}
 
         <div className="gate-form">

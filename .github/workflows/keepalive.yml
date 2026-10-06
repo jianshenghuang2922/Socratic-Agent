@@ -1,0 +1,44 @@
+# 保活：Render 免费层 15 分钟无流量就休眠，下次访问要冷启动 30-60 秒。
+# 首页白屏 30 秒 = 从任何渠道点进来的人几乎全丢，所以这个 workflow 存在的意义
+# 不是「优化」，而是「让推广不白费」。
+#
+# 免费 Web Service 每月额度 750 实例小时，单服务 24/7 约需 730 小时，刚好够用。
+#
+# 已知局限（知情后再决定要不要换方案）：
+#   - GitHub Actions 的 schedule 会被延迟，高峰期可能晚 5-15 分钟，偶发漏跑；
+#   - 仓库连续 60 天无提交时，GitHub 会自动停用 scheduled workflow；
+#   - 因此这是「低成本兜底」，不是「可靠保活」。要确定性可用，
+#     用 cron-job.org / UptimeRobot 每 10 分钟打一次，或直接升付费实例。
+name: keepalive
+
+on:
+  schedule:
+    # 每 10 分钟。GitHub 最小粒度是 5 分钟，但 10 分钟足够避开 15 分钟休眠阈值。
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 打一次首页，唤醒实例
+        run: |
+          set -euo pipefail
+          URL="${SITE_URL:-https://socratic-agent-th9l.onrender.com}"
+          # 冷启动最坏情况约 60 秒，给足超时；重试 3 次兜住偶发的 502/503。
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            --max-time 90 --retry 3 --retry-delay 10 --retry-all-errors \
+            "$URL/")
+          echo "GET $URL/ -> $code"
+          # 只要不是 5xx 就算成功：4xx 也说明实例是活的。
+          case "$code" in
+            5*) echo "实例返回 5xx，可能仍在冷启动"; exit 1 ;;
+            *) echo "ok" ;;
+          esac
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}

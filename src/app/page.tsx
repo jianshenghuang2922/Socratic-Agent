@@ -11,13 +11,14 @@ import { ScorePanel } from '@/components/ScorePanel';
 import { SourceViewerProvider } from '@/components/SourceViewer';
 import { ThinkingPanel } from '@/components/ThinkingPanel';
 import { UrlGate } from '@/components/UrlGate';
-import { useLlmSettings, useServerLlmInfo } from '@/hooks/useLlmSettings';
+import { useLlmSettings, useServerLlmInfo, useTrialQuota } from '@/hooks/useLlmSettings';
 import { useQASession } from '@/hooks/useQASession';
 
 export default function Page() {
   const s = useQASession();
   const llm = useLlmSettings();
   const serverInfo = useServerLlmInfo();
+  const trial = useTrialQuota();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const openSettings = () => setSettingsOpen(true);
@@ -25,6 +26,9 @@ export default function Page() {
   /**
    * 服务端没凭据 + 用户也没填 = 一定用不了。
    * 与其等用户提完问题再报错，不如在入口就把话说明白。
+   *
+   * 注意这里**不看免费额度**：额度是否用完由 UrlGate 自己判断并换成引导文案，
+   * 因为「没凭据」和「额度用尽」要说的两句话不一样。
    */
   const needsKey = serverInfo?.llmConfigured === false && !llm.settings;
 
@@ -42,6 +46,7 @@ export default function Page() {
         agentMode={s.agentMode}
         settings={llm.settings}
         serverInfo={serverInfo}
+        trial={trial}
         onOpenSettings={openSettings}
         onReset={s.resetSession}
       />
@@ -53,6 +58,7 @@ export default function Page() {
             error={s.status.kind === 'error' ? s.status.text : undefined}
             agentMode={s.agentMode}
             needsKey={needsKey}
+            trial={trial}
             onOpenSettings={openSettings}
             onSubmit={s.initSession}
           />
@@ -135,6 +141,7 @@ export default function Page() {
         onClose={() => setSettingsOpen(false)}
         settings={llm.settings}
         serverInfo={serverInfo}
+        trial={trial}
         onSave={llm.save}
         onClear={llm.clear}
       />

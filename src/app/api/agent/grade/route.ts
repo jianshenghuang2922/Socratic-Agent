@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { limits } from '@/server/config';
 import { readLlmOverride } from '@/server/byok';
-import { ApiError, readJson, requireString, toErrorResponse } from '@/server/http';
+import { ApiError, readJson, requireString } from '@/server/http';
+import { claimTrial, toErrorResponseWithTrial, type TrialClaim } from '@/server/trial';
 import { chat, extractJson } from '@/server/llm';
 import { gradeShortMessages } from '@/server/prompts';
 import { contextForAsk } from '@/server/rag';
@@ -57,6 +58,7 @@ const LETTERS = 'ABCDEFGH';
  * 后续出题会针对答错的知识点换角度再问。
  */
 export async function POST(req: Request) {
+  let claim: TrialClaim | null = null;
   try {
     const override = readLlmOverride(req);
     const body = await readJson<GradeBody>(req);
@@ -74,6 +76,12 @@ export async function POST(req: Request) {
       const answer = requireString(body.answer, 'answer', 4000);
       const reference = key.reference?.trim();
       if (!reference) throw new ApiError(410, '题目答案已失效，请重新出题');
+
+      /*
+       * 只有简答题占额度 —— 选择题判分是纯服务端比对，不调模型。
+       * 占位放在 contextForAsk 之前：检索里的查询扩展本身就会调一次模型。
+       */
+      claim = claimTrial(req, override);
 
       // 只喂与题目相关的资料片段，供模型核对要点
       const bundle = await contextForAsk(ctx, prompt, [], override);
@@ -148,6 +156,8 @@ export async function POST(req: Request) {
       explanation: key.explanation ?? '',
     });
   } catch (err) {
-    return toErrorResponse(err);
+    // 简答题判分失败才需要退；选择题那条路 claim 恒为 null，这里天然是空操作
+    claim?.refund();
+    return toErrorResponseWithTrial(err, req);
   }
 }

@@ -1786,6 +1786,40 @@ textarea {
   box-shadow: 0 0 10px 1px rgba(251, 191, 36, 0.8);
 }
 
+/*
+ * 免费额度提示。
+ * 存在的意义是让访客一眼看到「不用填 Key 也能先用」——
+ * 这一行决定了他是继续往下走还是直接关页面。
+ * 用 display:flex + width:fit-content 而不是 inline-flex：
+ * 后者会和上面的 .gate-mode 挤在同一行。
+ */
+.gate-quota {
+  position: relative;
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 8px;
+  margin: -8px auto 20px;
+  padding: 7px 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(91, 140, 255, 0.30);
+  background: rgba(91, 140, 255, 0.10);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+}
+
+.gate-quota strong {
+  color: #cfe0ff;
+  font-weight: 600;
+}
+
+.gate-quota__hint {
+  color: var(--muted);
+}
+
 /* ============================================================
    模型设置（自带 API Key）
    ============================================================ */

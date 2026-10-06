@@ -1,5 +1,6 @@
 import { MockAgentClient } from './mockAgent';
 import { getLlmHeaders, getLlmSettings } from './llmSettings';
+import { publishTrial, type TrialQuota } from './trial';
 import type {
   AgentClient,
   AskResult,
@@ -31,11 +32,15 @@ interface StreamFailure extends Error {
   emitted?: boolean;
   /** 服务端标记「这次失败值得换一批资料重试」（如出题自检没过），与网络类失败区分开 */
   retryable?: boolean;
+  /** 机器可读的失败分类，例如 trial_exhausted */
+  code?: string;
 }
 
 /** 服务端明确返回过状态码的失败（区别于网络中断 / 流被掐断） */
 interface AgentHttpError extends Error {
   status?: number;
+  /** 机器可读的失败分类，例如 trial_exhausted */
+  code?: string;
 }
 
 /**
@@ -80,9 +85,17 @@ export class HttpAgentClient implements AgentClient {
   private async toError(res: Response): Promise<Error> {
     // 后端统一返回 { error: '中文提示' }，优先展示它，别把原始 JSON 甩给用户
     let message = `${res.status} ${res.statusText}`;
+    let code: string | undefined;
     try {
-      const payload = (await res.json()) as { error?: string };
+      const payload = (await res.json()) as { error?: string; code?: string; trial?: TrialQuota };
       if (payload?.error) message = payload.error;
+      code = payload?.code;
+      /*
+       * 额度类错误会把最新计数一起带回来，就地刷新。
+       * 这样前端收到 429 的同一刻就把「还剩 N 次」改成 0，
+       * 不必再打一次 /config —— 那一次往返恰好发生在用户最不耐烦的时刻。
+       */
+      publishTrial(payload?.trial);
     } catch {
       /* 非 JSON 响应，保留状态码描述 */
     }
@@ -91,6 +104,7 @@ export class HttpAgentClient implements AgentClient {
     const err = new Error(message) as AgentHttpError;
     // 带上状态码：调用方据此判断「换接口重发有没有意义」
     err.status = res.status;
+    err.code = code;
     return err;
   }
 
@@ -167,6 +181,7 @@ export class HttpAgentClient implements AgentClient {
     let sources: string[] | undefined;
     let result: T | null = null;
     let streamError: string | null = null;
+    let streamErrorCode: string | undefined;
     let retryable = false;
     let emitted = false;
 
@@ -195,6 +210,9 @@ export class HttpAgentClient implements AgentClient {
           result?: T;
           error?: string;
           retryable?: boolean;
+          code?: string;
+          /** 服务端在每个动作结束时顺路带下来的最新额度 */
+          trial?: TrialQuota;
         };
         try {
           evt = JSON.parse(payload) as typeof evt;
@@ -216,9 +234,13 @@ export class HttpAgentClient implements AgentClient {
           handlers.onDelta?.(evt.text);
         } else if (evt.type === 'result' && evt.result !== undefined) {
           result = evt.result;
+        } else if (evt.type === 'quota') {
+          // 额度是旁路信息，订阅方自己处理，不影响本次请求的结果
+          publishTrial(evt.trial);
         } else if (evt.type === 'error') {
           streamError = evt.error ?? '上游返回了未知错误';
           retryable = evt.retryable === true;
+          streamErrorCode = evt.code;
         }
       }
     }
@@ -228,6 +250,7 @@ export class HttpAgentClient implements AgentClient {
       // emitted：已经吐过字就不能悄悄重来。retryable：服务端自检类失败可换一批资料重试
       err.emitted = emitted;
       err.retryable = retryable;
+      err.code = streamErrorCode;
       throw err;
     }
 

@@ -5,20 +5,26 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /**
+     * 机器可读的失败分类（可选）。
+     * 光靠中文文案让前端判断「该弹设置面板还是该提示重试」太脆 ——
+     * 文案一改前端就失灵，而且前端不该去 match 中文。
+     */
+    public readonly code?: string,
   ) {
     super(message);
     this.name = 'ApiError';
   }
 }
 
-export function jsonError(status: number, message: string) {
-  return NextResponse.json({ error: message }, { status });
+export function jsonError(status: number, message: string, code?: string) {
+  return NextResponse.json(code ? { error: message, code } : { error: message }, { status });
 }
 
 /** 把任意异常收敛成前端可展示的错误响应 */
 export function toErrorResponse(err: unknown) {
   if (err instanceof ApiError) {
-    return jsonError(err.status, err.message);
+    return jsonError(err.status, err.message, err.code);
   }
 
   const message = err instanceof Error ? err.message : String(err);

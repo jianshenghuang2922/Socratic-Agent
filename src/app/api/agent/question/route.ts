@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readLlmOverride } from '@/server/byok';
-import { ApiError, readJson, toErrorResponse } from '@/server/http';
+import { ApiError, readJson } from '@/server/http';
+import { claimTrial, toErrorResponseWithTrial, type TrialClaim } from '@/server/trial';
 import { summarizeHistory } from '@/server/prompts';
 import {
   generateQuestionAttempt,
@@ -30,6 +31,7 @@ export const maxDuration = 120;
  * 于是「修好了」和「没修好」在回归里同时成立 —— 典型的双实现漂移。
  */
 export async function POST(req: Request) {
+  let claim: TrialClaim | null = null;
   try {
     const override = readLlmOverride(req);
     const body = await readJson<{ contextId?: string; mode?: string; history?: unknown }>(req);
@@ -38,6 +40,13 @@ export async function POST(req: Request) {
 
     const mode = body.mode === 'short' ? 'short' : 'choice';
     const { askedQuestions } = summarizeHistory(body.history);
+
+    /*
+     * 额度按「一次出题」计，不按下面的重出轮次计 ——
+     * 重出是服务端自检没过（题目重复 / 不够具体），那是我们自己的问题，
+     * 让用户为三次重试付三次额度会非常费解。
+     */
+    claim = claimTrial(req, override);
 
     let lastError: unknown;
 
@@ -57,6 +66,8 @@ export async function POST(req: Request) {
 
     throw lastError;
   } catch (err) {
-    return toErrorResponse(err);
+    // 全部轮次都没出成题，额度退回去
+    claim?.refund();
+    return toErrorResponseWithTrial(err, req);
   }
 }

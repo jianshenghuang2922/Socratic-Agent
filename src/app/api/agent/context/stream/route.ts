@@ -1,5 +1,7 @@
 import { buildContext } from '@/server/context';
-import { describeUpstream, readJson, requireString, toErrorResponse } from '@/server/http';
+import { readLlmOverride } from '@/server/byok';
+import { describeUpstream, readJson, requireString } from '@/server/http';
+import { claimTrial, toErrorResponseWithTrial, trialQuota, type TrialClaim } from '@/server/trial';
 import type { TraceSink } from '@/server/trace';
 
 export const runtime = 'nodejs';
@@ -29,13 +31,20 @@ export const maxDuration = 300;
  */
 export async function POST(req: Request) {
   let url: string;
+  let claim: TrialClaim | null = null;
 
   // 参数校验放在建立流之前 —— 这些错误还能用正常状态码返回
   try {
     const body = await readJson<{ url?: string }>(req);
     url = requireString(body.url, 'url', 2048);
+    /*
+     * 额度也在建流之前占：这样「额度用完」能用正常的 429 状态码返回，
+     * 前端拿到的是结构化错误，而不是流里飘出来的一个 error 事件。
+     * override 必须一起传 —— 带了自带 Key 的请求不占服务端额度。
+     */
+    claim = claimTrial(req, readLlmOverride(req));
   } catch (err) {
-    return toErrorResponse(err);
+    return toErrorResponseWithTrial(err, req);
   }
 
   const encoder = new TextEncoder();
@@ -43,8 +52,11 @@ export async function POST(req: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
+      /** 是否已经产生了用户可见的结果 —— 决定失败时退不退额度 */
+      let visible = false;
       const send = (payload: unknown) => {
         if (closed) return;
+        if ((payload as { type?: string })?.type === 'result') visible = true;
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         } catch {
@@ -58,11 +70,20 @@ export async function POST(req: Request) {
       try {
         const result = await buildContext(url, trace);
         send({ type: 'result', result });
+        const quota = trialQuota(req);
+        if (quota.available) send({ type: 'quota', trial: quota });
         send({ type: 'done' });
       } catch (err) {
         console.error('[context/stream] 失败:', err);
+        /*
+         * 没给到任何结果才退额度。克隆失败、仓库太大这类失败是服务端的问题，
+         * 不该算在用户头上 —— 不退的话他还没开始用就把次数耗光了。
+         */
+        if (!visible) claim?.refund();
         // 已经开始发事件了，状态码改不了，只能把错误当事件发；同样归一化成中文
         send({ type: 'error', error: describeUpstream(err) });
+        const quota = trialQuota(req);
+        if (quota.available) send({ type: 'quota', trial: quota });
       } finally {
         closed = true;
         try {

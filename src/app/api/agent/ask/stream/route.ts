@@ -1,5 +1,6 @@
 import { readLlmOverride } from '@/server/byok';
-import { ApiError, describeUpstream, readJson, requireString, toErrorResponse } from '@/server/http';
+import { ApiError, describeUpstream, readJson, requireString } from '@/server/http';
+import { claimTrial, toErrorResponseWithTrial, trialQuota, type TrialClaim } from '@/server/trial';
 import { chat, chatStream, extractJson } from '@/server/llm';
 import { askMessages, gradeShortMessages, hintMessages, summarizeHistory } from '@/server/prompts';
 import { generateQuestionAttempt, isQuestionRetryable, MAX_QUESTION_ATTEMPTS } from '@/server/question';
@@ -52,6 +53,8 @@ export async function POST(req: Request) {
   let ctx: ReturnType<typeof requireContext>;
   let body: Record<string, unknown>;
   let override: LlmOverride | undefined;
+  let claim: TrialClaim | null = null;
+  let action: string | null = null;
 
   // 参数校验放在建立流之前 —— 这些错误还能用正常状态码返回
   try {
@@ -60,18 +63,29 @@ export async function POST(req: Request) {
     // body.contextId 是 unknown：readJson 是泛型断言，不做运行时校验，
     // 必须自己收窄再递给 requireContext（它对 null 会给出 410）
     ctx = requireContext(typeof body.contextId === 'string' ? body.contextId : undefined);
+    action = typeof body.action === 'string' ? body.action : null;
+
+    /*
+     * 免费额度在**建流之前**占，这样「额度用完」还能用正常的 429 状态码返回，
+     * 前端拿到结构化错误（含最新额度）而不是流里飘出来的一个 error 事件。
+     * 放在参数校验之后：畸形请求不该消耗用户的免费次数。
+     */
+    if (actionNeedsModel(action, body)) claim = claimTrial(req, override);
   } catch (err) {
-    return toErrorResponse(err);
+    return toErrorResponseWithTrial(err, req);
   }
 
-  const action = typeof body.action === 'string' ? body.action : null;
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
+      /** 是否已经产生了用户可见的结果 —— 决定失败时退不退额度 */
+      let visible = false;
       const send = (payload: unknown) => {
         if (closed) return;
+        const type = (payload as { type?: string })?.type;
+        if (type === 'delta' || type === 'result') visible = true;
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         } catch {
@@ -82,20 +96,39 @@ export async function POST(req: Request) {
 
       const trace: TraceSink = (event) => send({ type: 'trace', ...event });
 
+      /** 把最新额度顺路带下去，前端不必为了刷新计数再打一次 /config */
+      const sendQuota = () => {
+        const quota = trialQuota(req);
+        if (quota.available) send({ type: 'quota', trial: quota });
+      };
+
       try {
         if (action === 'question') await runQuestion();
         else if (action === 'hint') await runHint();
         else if (action === 'grade') await runGrade();
         else await runAsk();
 
+        sendQuota();
         send({ type: 'done' });
       } catch (err) {
         console.error('[ask/stream] 失败:', err);
+        /*
+         * 没给到任何结果才退额度。
+         * 免费模型上游 429 在本应用里是常态，不退的话用户会被「白扣」到零 ——
+         * 那比一开始就没有额度更让人恼火。已经吐过半个回答就不退（他确实拿到了东西）。
+         */
+        if (!visible) claim?.refund();
         // 走流式时就改不了状态码了，只能把错误当事件发；同样要归一化成中文
         // retryable：出题被判定「重复 / 不够具体」时前端可以换一批资料重试，
         // 其他错误（会话失效、网关故障）重试没有意义
         const retryable = err instanceof ApiError && err.status === 502 && isQuestionRetryable(err);
-        send({ type: 'error', error: describeUpstream(err), retryable });
+        send({
+          type: 'error',
+          error: describeUpstream(err),
+          retryable,
+          code: err instanceof ApiError ? err.code : undefined,
+        });
+        sendQuota();
       } finally {
         closed = true;
         try {
@@ -348,6 +381,18 @@ export async function POST(req: Request) {
 /* ------------------------------------------------------------------ */
 
 const LETTERS = 'ABCDEFGH';
+
+/**
+ * 这个动作会不会真的调用模型 —— 决定要不要占用免费额度。
+ *
+ * 选择题判分是纯服务端比对答案键（零延迟、零成本），对它收额度等于
+ * 「看一眼答案也扣次数」，用户一用就会发现不对，反而伤信任。
+ */
+function actionNeedsModel(action: string | null, body: Record<string, unknown>): boolean {
+  if (action === 'grade') return body.type === 'short';
+  // question / hint / 默认（提问）都要调模型
+  return true;
+}
 
 function clampAttempt(value: unknown): number {
   const n = typeof value === 'number' ? Math.floor(value) : 0;
