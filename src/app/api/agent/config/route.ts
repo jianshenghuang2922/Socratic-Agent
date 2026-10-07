@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { hasServerCredentials, llmConfig } from '@/server/config';
-import { trialQuota } from '@/server/trial';
+import { trialQuota, visitorCookie } from '@/server/trial';
 
 export const runtime = 'nodejs';
 /** 必须按请求实时读取 env 与额度计数，不能被构建期静态化 */
@@ -17,11 +17,17 @@ export const dynamic = 'force-dynamic';
  *   - 没凭据 ⇒ 只能引导他自带 Key（BYOK）。
  *
  * 注意：这里只回布尔值与计数，绝不回传 Key 本身，也不回传网关地址。
+ *
+ * ⚠️ 这里也是**给访客发身份 Cookie 的唯一出口**，别挪走：
+ *   页面每次加载都会打这个接口（`useServerLlmInfo` 挂载即请求），
+ *   所以浏览器一定会在第一次动作之前拿到 Cookie —— 额度从此按浏览器计，
+ *   刷新页面不再重置。少了它，访客只能按 IP 计数，而线上 IP 那段并不稳定
+ *   （见 `clientIp()` 的说明），额度会被刷新重置、也会被同节点的陌生人吃光。
  */
 export async function GET(req: Request) {
   const configured = hasServerCredentials();
 
-  return NextResponse.json({
+  const res = NextResponse.json({
     /** 服务端是否配了模型凭据 */
     llmConfigured: configured,
     /** 服务端默认模型（仅用于界面展示；没配凭据时不暴露） */
@@ -40,4 +46,16 @@ export async function GET(req: Request) {
      */
     trial: trialQuota(req),
   });
+
+  /*
+   * 额度是**按访客**算的，所以这个响应绝不能被任何一层缓存共享出去 ——
+   * 一旦被缓存，第二个访客会读到第一个人的计数（要么凭空多出额度，
+   * 要么还没用就被告知「已用完」）。顺带把 `force-dynamic` 的意图落实成响应头。
+   */
+  res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+
+  const cookie = visitorCookie(req);
+  if (cookie) res.headers.append('Set-Cookie', cookie);
+
+  return res;
 }

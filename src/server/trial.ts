@@ -13,11 +13,19 @@
  * 失败会退还：免费模型上游 429 是常态，不退还的话用户会被「白扣」到零，
  * 体验比没有额度更差。
  *
- * 两层限制：per-IP（防止单个人刷）+ 全局（护住服务端账号的上游配额）。
- * 全局那层不是冗余 —— IP 来自 `x-forwarded-for`，可伪造，全局上限才是不依赖
- * 任何客户端输入的硬约束。
+ * 两层限制：per-visitor（防止单个人刷）+ 全局（护住服务端账号的上游配额）。
+ * 全局那层不是冗余 —— 访客身份来自 Cookie / `x-forwarded-for`，都可伪造，
+ * 全局上限才是不依赖任何客户端输入的硬约束。
+ *
+ * ⚠️ 「访客」不等于「IP」，这是踩过的坑：
+ *   早先只用 `x-forwarded-for` 的最后一段当身份，结果线上额度会被**刷新页面**重置。
+ *   原因是最后一段并不是访客的地址，而是边缘节点的地址 —— 它既每次请求都可能变
+ *   （换个边缘节点就是新桶 ⇒ 刷新即重置），又会被成百上千个真实用户共享
+ *   （陌生人把你的额度用光 ⇒ 你还没用就报「额度已用完」）。
+ *   现在身份以浏览器 Cookie 为主、IP 只作兜底，两者都不再影响正常访客。
  */
 
+import { randomBytes } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { hasServerCredentials, limits, type LlmOverride } from './config';
 import { ApiError, toErrorResponse } from './http';
@@ -48,11 +56,11 @@ export interface TrialQuota {
    * 现在 `curl /api/agent/config` 一眼就能读出是哪种。
    */
   reason: TrialUnavailableReason | null;
-  /** 本 IP 在窗口内的总次数 */
+  /** 本访客在窗口内的总次数 */
   limit: number;
-  /** 本 IP 已用 */
+  /** 本访客已用 */
   used: number;
-  /** 本 IP 剩余（全局用尽时也会归零） */
+  /** 本访客剩余（全局用尽时也会归零） */
   remaining: number;
   /** 当前窗口还剩多少毫秒重置 */
   resetsInMs: number;
@@ -70,7 +78,13 @@ interface Bucket {
 }
 
 interface TrialStore {
-  ips: Map<string, Bucket>;
+  /**
+   * 所有额度桶。键由 `visitorOf()` 给出，两种形状：
+   *   `v:<vid>`   带 Cookie 的浏览器 —— 正常访客走这条，刷新不会重置；
+   *   `i:<ip>`    没带 Cookie 的客户端（脚本 / 首次请求）—— 兜底。
+   * 前缀是必须的：没有它，一个 vid 恰好等于某个 IP 时两者会共用同一个桶。
+   */
+  keys: Map<string, Bucket>;
   global: Bucket | null;
 }
 
@@ -84,11 +98,20 @@ declare global {
   var __socraticTrial: TrialStore | undefined;
 }
 
-const store: TrialStore = (globalThis.__socraticTrial ??= { ips: new Map(), global: null });
+/*
+ * ⚠️ 必须按**形状**判断能不能复用，不能只判断「有没有」。
+ * globalThis 上的对象在 dev 热重载后仍然活着，而这个结构改过一次
+ * （`ips: Map<ip, Bucket>` → `keys: Map<key, Bucket>`）：
+ * 直接复用旧对象会拿到一个没有 `keys` 的 store，每个请求都在 TypeError 上崩掉。
+ */
+const store: TrialStore =
+  globalThis.__socraticTrial?.keys instanceof Map
+    ? globalThis.__socraticTrial
+    : (globalThis.__socraticTrial = { keys: new Map(), global: null });
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
-/** IP 表上限。超过就淘汰最久没动的，避免伪造 IP 把内存撑爆 */
-const MAX_TRACKED_IPS = 10_000;
+/** 桶表上限。超过就淘汰最久没动的，避免伪造身份把内存撑爆 */
+const MAX_TRACKED_KEYS = 10_000;
 
 /**
  * 免费额度为什么不可用；可用时返回 null。
@@ -132,23 +155,112 @@ if (trialUnavailableReason() === 'no_server_credentials' && !globalThis.__socrat
 /**
  * 取客户端 IP。
  *
- * ⚠️ 残余风险：`x-forwarded-for` / `x-real-ip` 都是**请求头**，客户端可以自己伪造。
+ * ⚠️ 取**第一段**，不是最后一段。
+ * `X-Forwarded-For` 的每一跳追加的是「**它看到的对端**」地址，所以链路是
+ * `<真实客户端>, <第一层代理>, <第二层代理>…` —— 最左边才是访客，最右边是
+ * 离服务最近的那台代理。原来取最后一段，等于拿边缘节点的地址当访客身份，
+ * 线上表现为「刷新页面额度就重置」（换边缘节点 = 换桶）以及「额度被陌生人吃光」
+ * （同一个边缘节点后面挂着成千上万个真实用户，共用一个桶）。
+ *
+ * ⚠️ 残余风险：本函数读的全是**请求头**，客户端可以自己伪造。
  * 平台代理是否覆盖/追加它们取决于部署环境，这里无法保证。
  * 因此本函数的返回值只用于「公平分配」，**不能当作安全边界** ——
- * 真正的兜底是 `limits.trialGlobal`（与 IP 无关）以及服务端账号自己的上游配额。
+ * 真正的兜底是 `limits.trialGlobal`（与任何客户端输入无关）以及服务端账号自己的上游配额。
+ * 这也是为什么正常访客一律走 Cookie 身份，IP 只在没有 Cookie 时兜底。
  */
 export function clientIp(req: Request): string {
   const xff = req.headers.get('x-forwarded-for');
   if (xff) {
-    // 取最后一段：多数代理是「追加」真实 IP 到客户端给的值之后，
-    // 因此最后一段比第一段更接近真实来源。
     const parts = xff
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
-    if (parts.length) return parts[parts.length - 1].slice(0, 64);
+    if (parts.length) return parts[0].slice(0, 64);
   }
   return req.headers.get('x-real-ip')?.trim().slice(0, 64) || 'unknown';
+}
+
+/* ------------------------------------------------------------------ */
+/* 访客身份                                                            */
+/* ------------------------------------------------------------------ */
+
+/** 访客标识 Cookie 名 */
+const VISITOR_COOKIE = 'socratic_vid';
+const VISITOR_COOKIE_MAX_AGE = 365 * 24 * 60 * 60;
+/**
+ * 只接受这个形状：16 字节的 hex。
+ * 畸形值一律当作「没有 Cookie」—— 否则一个超长 Cookie 就能把桶表撑爆。
+ */
+const VISITOR_RE = /^[0-9a-f]{32}$/;
+
+/** 一次请求的访客身份 */
+export interface Visitor {
+  /** 额度桶的键 */
+  key: string;
+}
+
+function parseCookies(header: string | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    const name = part.slice(0, eq).trim();
+    if (name) out.set(name, part.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+/** 读出浏览器带来的访客 id；没有或畸形时返回 null */
+export function readVisitorId(req: Request): string | null {
+  const raw = parseCookies(req.headers.get('cookie')).get(VISITOR_COOKIE);
+  return raw && VISITOR_RE.test(raw) ? raw : null;
+}
+
+/**
+ * 首次访问要下发的 `Set-Cookie`；已经有合法 Cookie 时返回 null（不必重复下发）。
+ *
+ * 单独抽成函数（而不是塞进 `visitorOf`）是为了让**写 Cookie 这件事只在
+ * 真正要回应访客的出口发生**：SSE 流、错误体这些出口不写 Cookie，
+ * 就不会出现「同一个响应头被反复追加」的怪状。
+ */
+export function visitorCookie(req: Request): string | null {
+  if (readVisitorId(req)) return null;
+  const id = randomBytes(16).toString('hex');
+  // Secure 只在 https 下发：本地 http 开发时带 Secure 的 Cookie 会被浏览器直接丢掉，
+  // 表现为「本地怎么测都是新访客」，白查半天。
+  const secure = (req.headers.get('x-forwarded-proto') ?? '').includes('https') ? '; Secure' : '';
+  return `${VISITOR_COOKIE}=${id}; Path=/; Max-Age=${VISITOR_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax${secure}`;
+}
+
+/**
+ * 同一次请求内只解析一次。
+ *
+ * 用 WeakMap 而不是「让每个调用方自己传」：`trialQuota()` 与 `claimTrial()`
+ * 可能被同一个请求的不同代码路径分别调用，两者必须看到**同一个身份** ——
+ * 否则「显示还剩几次」和「实际扣哪个桶」会对不上，而这种错位极难发现。
+ */
+const visitorCache = new WeakMap<Request, Visitor>();
+
+export function visitorOf(req: Request): Visitor {
+  const hit = visitorCache.get(req);
+  if (hit) return hit;
+
+  const vid = readVisitorId(req);
+  /*
+   * 有合法 Cookie ⇒ 认这个浏览器。
+   * 刷新页面不会丢 Cookie，所以「刷新重置额度」这条路径被彻底堵死。
+   */
+  const visitor: Visitor = vid ? { key: `v:${vid}` } : { key: `i:${clientIp(req)}` };
+
+  /*
+   * ⚠️ 没有 Cookie 时**绝不能**临时生成一个 id 当身份。
+   * 那样每个请求都是全新的桶，免费额度等于无限 —— 脚本刷一下就穿。
+   * 身份必须是一个「下次还会带回来」的东西，所以这里只退回 IP：
+   * 不精确（NAT 下会互相影响、可伪造），但不会凭空发额度。
+   */
+  visitorCache.set(req, visitor);
+  return visitor;
 }
 
 /** 取（必要时新建）一个未过期的桶。窗口过期即视为归零 */
@@ -161,10 +273,10 @@ function bucketFor(b: Bucket | null | undefined, now: number): Bucket {
 }
 
 function sweep(now: number): void {
-  if (store.ips.size <= MAX_TRACKED_IPS) return;
-  const ordered = [...store.ips.entries()].sort((a, b) => a[1].touchedAt - b[1].touchedAt);
-  for (const [ip] of ordered.slice(0, store.ips.size - MAX_TRACKED_IPS)) {
-    store.ips.delete(ip);
+  if (store.keys.size <= MAX_TRACKED_KEYS) return;
+  const ordered = [...store.keys.entries()].sort((a, b) => a[1].touchedAt - b[1].touchedAt);
+  for (const [key] of ordered.slice(0, store.keys.size - MAX_TRACKED_KEYS)) {
+    store.keys.delete(key);
   }
 }
 
@@ -182,24 +294,23 @@ export function trialQuota(req: Request): TrialQuota {
   }
 
   const now = Date.now();
-  const ip = clientIp(req);
-  const perIp = bucketFor(store.ips.get(ip), now);
+  const perVisitor = bucketFor(store.keys.get(visitorOf(req).key), now);
   const global = bucketFor(store.global, now);
 
   // 全局余量决定这个人实际还能用几次 —— 否则界面会显示「还剩 8 次」，
   // 一提问却报「额度已用完」，用户只会觉得这站在骗人。
   const remaining = Math.max(
     0,
-    Math.min(limits.trialPerIp - perIp.used, limits.trialGlobal - global.used),
+    Math.min(limits.trialPerVisitor - perVisitor.used, limits.trialGlobal - global.used),
   );
 
   return {
     available: true,
     reason: null,
-    limit: limits.trialPerIp,
-    used: perIp.used,
+    limit: limits.trialPerVisitor,
+    used: perVisitor.used,
     remaining,
-    resetsInMs: Math.max(0, WINDOW_MS - (now - perIp.startedAt)),
+    resetsInMs: Math.max(0, WINDOW_MS - (now - perVisitor.startedAt)),
   };
 }
 
@@ -210,10 +321,10 @@ export function trialQuota(req: Request): TrialQuota {
  * 502（见 llm.ts），所以 429 在本站内不会和上游限流混淆。
  * 另外带上 `code` 与最新的 `trial` 状态，前端据此把额度显示归零并直接弹出设置面板。
  */
-function exhaustedError(scope: 'ip' | 'global'): ApiError {
+function exhaustedError(scope: 'visitor' | 'global'): ApiError {
   const message =
-    scope === 'ip'
-      ? `你的免费额度已用完（${limits.trialPerIp} 次 / 24 小时）。点击页面右上角「模型设置」填入你自己的 API Key 即可继续 —— Key 只存在你的浏览器里，不会上传到服务端。`
+    scope === 'visitor'
+      ? `你的免费额度已用完（${limits.trialPerVisitor} 次 / 24 小时）。点击页面右上角「模型设置」填入你自己的 API Key 即可继续 —— Key 只存在你的浏览器里，不会上传到服务端。`
       : '今日全站免费额度已被用完（服务端共用一份上游配额）。点击页面右上角「模型设置」填入你自己的 API Key 即可继续，不受此限制影响。';
 
   return new ApiError(429, message, TRIAL_EXHAUSTED);
@@ -244,18 +355,18 @@ export function claimTrial(req: Request, override?: LlmOverride): TrialClaim | n
   const now = Date.now();
   sweep(now);
 
-  const ip = clientIp(req);
-  const perIp = bucketFor(store.ips.get(ip), now);
-  store.ips.set(ip, perIp);
+  const key = visitorOf(req).key;
+  const perVisitor = bucketFor(store.keys.get(key), now);
+  store.keys.set(key, perVisitor);
 
   const global = bucketFor(store.global, now);
   store.global = global;
 
   // 先判全局：额度已经全站用尽时，说是「你的」额度用完会把锅甩给用户
   if (global.used >= limits.trialGlobal) throw exhaustedError('global');
-  if (perIp.used >= limits.trialPerIp) throw exhaustedError('ip');
+  if (perVisitor.used >= limits.trialPerVisitor) throw exhaustedError('visitor');
 
-  perIp.used += 1;
+  perVisitor.used += 1;
   global.used += 1;
 
   let refunded = false;
@@ -264,11 +375,11 @@ export function claimTrial(req: Request, override?: LlmOverride): TrialClaim | n
       if (refunded) return;
       refunded = true;
       /*
-       * 这里持有的 perIp / global 是**对象引用**。
+       * 这里持有的 perVisitor / global 是**对象引用**。
        * 若窗口在占用与退还之间滚过一轮，bucketFor 会新建对象替换掉旧的，
        * 我们手上的引用就变成了孤儿 —— 对孤儿自减不会影响线上计数，正是想要的行为。
        */
-      if (perIp.used > 0) perIp.used -= 1;
+      if (perVisitor.used > 0) perVisitor.used -= 1;
       if (global.used > 0) global.used -= 1;
     },
   };
@@ -276,7 +387,7 @@ export function claimTrial(req: Request, override?: LlmOverride): TrialClaim | n
 
 /** 仅测试用：清空所有计数 */
 export function __resetTrialStore(): void {
-  store.ips.clear();
+  store.keys.clear();
   store.global = null;
 }
 

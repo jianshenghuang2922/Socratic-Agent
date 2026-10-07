@@ -174,7 +174,12 @@ export const limits = {
    */
   trialEnabled: process.env.TRIAL_ENABLED !== '0',
   /**
-   * 单个 IP 在 24 小时窗口内能用多少次免费额度。
+   * 单个**访客**在 24 小时窗口内能用多少次免费额度。
+   *
+   * ⚠️ 是「访客」不是「IP」：身份由服务端下发的 Cookie 决定，没有 Cookie 的
+   * 客户端才退回 IP（见 `server/trial.ts` 的 `visitorOf()`）。
+   * 早先按 IP 计数，而线上 IP 取的是 `x-forwarded-for` 的最后一段 ——
+   * 那是边缘节点的地址，于是「刷新页面额度就重置」。别再改回去。
    *
    * 这个值必须和**服务端账号自己的上游配额**对齐，而不是按「用户用着爽」来定。
    *
@@ -185,7 +190,7 @@ export const limits = {
    * 所以这里的默认值给得很小 —— 它的定位是「让人看到第一道题」，不是「免费用一天」。
    * 想真正放开，先给账号充值提额，再同步调大 TRIAL_GLOBAL_DAILY_LIMIT。
    */
-  trialPerIp: int('TRIAL_DAILY_LIMIT', 10),
+  trialPerVisitor: int('TRIAL_DAILY_LIMIT', 10),
   /**
    * 所有 IP 合计的 24 小时上限 —— 真正的兜底。
    *
