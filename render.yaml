@@ -64,8 +64,9 @@ services:
         value: "1"
       - key: TRIAL_DAILY_LIMIT
         value: "10"
-      # 全局上限是护住账号的硬约束 —— 单 IP 计数靠的是 x-forwarded-for，
-      # 那个头客户端可伪造，不能当安全边界。
+      # 全局上限是护住账号的硬约束 —— 单访客计数认的是服务端下发的 Cookie，
+      # 没有 Cookie 的客户端才退回 x-forwarded-for（那个头客户端可伪造），
+      # 两者都不能当安全边界。
       - key: TRIAL_GLOBAL_DAILY_LIMIT
         value: "30"
 
