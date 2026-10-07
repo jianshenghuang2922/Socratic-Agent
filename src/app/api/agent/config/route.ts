@@ -31,6 +31,12 @@ export async function GET(req: Request) {
     /**
      * 免费试用额度。服务端没配凭据时 `available` 为 false，
      * 前端据此退回「必须自带 Key」的老逻辑。
+     *
+     * ⚠️ 这里的 `trial.reason` 是排障入口，别删：
+     *    `no_server_credentials` = 服务端漏配了 OPENAI_API_KEY，
+     *    免费额度根本发不出来（**曾经线上就是这个状态**）；
+     *    `disabled` = 运维显式关了额度（TRIAL_ENABLED=0），属正常。
+     *    两种情况下前端表现完全一致，只有这个字段能区分。
      */
     trial: trialQuota(req),
   });

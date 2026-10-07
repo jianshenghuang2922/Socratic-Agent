@@ -10,9 +10,18 @@
  * 服务端那份在 `src/server/trial.ts`，两边只共享字段形状，不共享代码。
  */
 
+/** 没有免费额度时的原因，与服务端 `TrialUnavailableReason` 保持一致 */
+export type TrialUnavailableReason = 'disabled' | 'no_server_credentials';
+
 export interface TrialQuota {
   /** 这个部署是否提供免费额度 */
   available: boolean;
+  /**
+   * `available` 为 false 时的原因（为 true 时为 null）。
+   * 界面不直接展示它 —— 对访客来说「自带 Key」就是唯一出路，原因只对运维有意义；
+   * 它的价值在于 `/api/agent/config` 能被一眼读懂，不必去翻源码。
+   */
+  reason?: TrialUnavailableReason | null;
   /** 本 IP 在 24 小时窗口内的总次数 */
   limit: number;
   /** 已用 */

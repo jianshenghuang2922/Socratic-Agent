@@ -22,10 +22,32 @@ import { NextResponse } from 'next/server';
 import { hasServerCredentials, limits, type LlmOverride } from './config';
 import { ApiError, toErrorResponse } from './http';
 
+/**
+ * 没有免费额度时的原因。有额度时为 null。
+ *
+ * 这两个原因在外部**表现完全一样**（都是 `available: false` → 入口要求自带 Key），
+ * 但处置方式相反：一个是运维有意为之，另一个是漏配环境变量的事故。
+ * 不区分就只能去读源码 —— 见下面的 `trialUnavailableReason()`。
+ */
+export type TrialUnavailableReason =
+  /** 运维显式关闭（TRIAL_ENABLED=0）—— 有意为之，无需处理 */
+  | 'disabled'
+  /** ⚠️ 误配：TRIAL_ENABLED=1 但服务端没有任何模型凭据 —— 额度根本发不出来 */
+  | 'no_server_credentials';
+
 /** 暴露给前端的额度状态（不含任何凭据信息） */
 export interface TrialQuota {
   /** 这个部署是否提供免费额度：服务端配了凭据 + 未显式关闭 */
   available: boolean;
+  /**
+   * `available` 为 false 时说明原因，为 true 时为 null。
+   *
+   * 加这个字段的直接原因是踩过的坑：线上漏配 `OPENAI_API_KEY`，
+   * `trialEnabled()` 于是为 false，入口**静默**退化成「必须自带 API Key」。
+   * 从外部看，这和「免费额度功能压根没做」一模一样，只能去读源码才能分辨。
+   * 现在 `curl /api/agent/config` 一眼就能读出是哪种。
+   */
+  reason: TrialUnavailableReason | null;
   /** 本 IP 在窗口内的总次数 */
   limit: number;
   /** 本 IP 已用 */
@@ -68,8 +90,43 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 /** IP 表上限。超过就淘汰最久没动的，避免伪造 IP 把内存撑爆 */
 const MAX_TRACKED_IPS = 10_000;
 
+/**
+ * 免费额度为什么不可用；可用时返回 null。
+ *
+ * 单独抽出来是为了让「不可用」这件事**可被外部观测**。
+ * 原先这个判断内联在 `trialEnabled()` 里，外部只能拿到一个布尔值，
+ * 分不清是「运维主动关掉了」还是「环境变量漏配了」—— 而后者是事故。
+ */
+export function trialUnavailableReason(): TrialUnavailableReason | null {
+  if (!limits.trialEnabled) return 'disabled';
+  if (!hasServerCredentials()) return 'no_server_credentials';
+  return null;
+}
+
 export function trialEnabled(): boolean {
-  return limits.trialEnabled && hasServerCredentials();
+  return trialUnavailableReason() === null;
+}
+
+/*
+ * ⚠️ 启动时喊一声 —— 这是本项目最常见的部署事故。
+ *
+ * `TRIAL_ENABLED=1` 但服务端一个模型凭据都没有时，`trialEnabled()` 为 false，
+ * 入口会**静默**退化成「必须自带 API Key」，从外部看和「额度功能没做」
+ * 完全无法区分（我们为此排查了一轮）。日志里主动说破，省掉下次的猜测。
+ * 用 globalThis 去重，免得 dev 热重载把它刷满屏。
+ */
+declare global {
+  // eslint-disable-next-line no-var
+  var __socraticTrialWarned: boolean | undefined;
+}
+
+if (trialUnavailableReason() === 'no_server_credentials' && !globalThis.__socraticTrialWarned) {
+  globalThis.__socraticTrialWarned = true;
+  console.warn(
+    '[trial] TRIAL_ENABLED=1，但服务端没有模型凭据（OPENAI_API_KEY / CODEBUDDY_API_KEY 均为空）。\n' +
+      '        免费额度不会生效，入口将退化为「必须自带 API Key」。\n' +
+      '        修复：在该服务的环境变量里补上 OPENAI_API_KEY 与 OPENAI_BASE_URL。',
+  );
 }
 
 /**
@@ -114,7 +171,14 @@ function sweep(now: number): void {
 /** 只读地算一次额度状态，不消耗任何东西 */
 export function trialQuota(req: Request): TrialQuota {
   if (!trialEnabled()) {
-    return { available: false, limit: 0, used: 0, remaining: 0, resetsInMs: 0 };
+    return {
+      available: false,
+      reason: trialUnavailableReason(),
+      limit: 0,
+      used: 0,
+      remaining: 0,
+      resetsInMs: 0,
+    };
   }
 
   const now = Date.now();
@@ -131,6 +195,7 @@ export function trialQuota(req: Request): TrialQuota {
 
   return {
     available: true,
+    reason: null,
     limit: limits.trialPerIp,
     used: perIp.used,
     remaining,

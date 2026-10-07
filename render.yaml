@@ -70,9 +70,21 @@ services:
         value: "30"
 
       # ---- 密钥：sync: false 表示不在仓库里存值，由你在 Render 控制台填写 ----
-      # ⚠️ 这两项**可以留空**：应用支持「用户自带 API Key」（BYOK），
-      #    用户在页面右上角「模型设置」里填自己的 Key 即可正常提问与出题。
-      #    公开部署建议就留空 —— 挂一个共享付费 Key，很快会被刷爆。
+      # ⚠️ 这两项**必须填**，否则上面的免费试用额度等于不存在。
+      #    免费额度的存在性前提是「服务端自己持有凭据」：
+      #        trialEnabled() = TRIAL_ENABLED && hasServerCredentials()
+      #    而 hasServerCredentials() 就是看 OPENAI_API_KEY 有没有值。
+      #    没配 → /api/agent/config 返回 llmConfigured:false + trial.available:false
+      #    → 首页直接退化成「必须自带 API Key」，现象就像额度功能压根没实现。
+      #    （BYOK 仍然可用：用户依旧可在右上角「模型设置」填自己的 Key。）
+      #
+      #    填法：Render 控制台 → 该服务 → Environment → 编辑这两个变量
+      #        OPENAI_API_KEY  = 你的 OpenRouter Key（sk-or-v1-...）
+      #        OPENAI_BASE_URL = https://openrouter.ai/api/v1
+      #    ⚠️ 这个 Key 会被所有「未自带 Key 的访客」共用，务必配合上面的
+      #       TRIAL_DAILY_LIMIT / TRIAL_GLOBAL_DAILY_LIMIT 一起控制成本。
+      #    ⚠️ 只有「服务由本 blueprint 管理」时这里的改动才会同步；手动创建
+      #       的服务必须直接在控制台 Environment 里改。
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_BASE_URL
