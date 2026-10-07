@@ -1682,6 +1682,20 @@ textarea {
   color: transparent;
 }
 
+/**
+ * 首页 Hero 标题要纯色、不要渐变。
+ * ⚠️ 必须用独立修饰类，不能直接改 `.gate-title` ——
+ * 那个类还被 page.tsx 的加载态标题「正在解析 URL 内容…」共用。
+ * ⚠️ 关渐变必须同时重置 `-webkit-background-clip` 并把 color 设回不透明，
+ * 只写 `background:none` 会留下 `color:transparent`，文字直接隐形。
+ */
+.gate-title--plain {
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  color: #f2f6ff;
+}
+
 .gate-sub {
   position: relative;
   margin: 0 auto 26px;

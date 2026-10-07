@@ -8,13 +8,18 @@ import './globals.css';
  */
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://socratic-agent-th9l.onrender.com';
 
-/** 标题卖结果，不卖品类。「基于 URL 的智能问答」没人搜也没人点。 */
-const TAGLINE = '丢一个链接，它出题考你有没有真读懂';
+/**
+ * 标题卖结果，不卖品类。「基于 URL 的智能问答」没人搜也没人点。
+ *
+ * ⚠️ 品牌钩子「我不是做题区！」只放**视觉位**（首屏 h1 + 分享卡片图）；
+ * metadata 保持**可被搜索**的描述性文案 —— 钩子没人搜，塞进 <title> 等于丢流量。
+ */
+const TAGLINE = '读网页与仓库，出题考你';
 const BLURB = '选择题或简答题，题干锚定原文里真实存在的段落与函数。答错的题会成为下一题的靶子。';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: 'Socratic Agent · 丢一个链接，它出题考你',
+  title: 'Socratic Agent · 读网页与仓库，出题考你',
   description:
     '粘贴一个网页或代码仓库的地址，它读完内容后出题考你：选择题或简答题，题干锚定原文里真实存在的段落与函数。答错的题会成为后续出题的靶子。',
   applicationName: 'Socratic Agent',

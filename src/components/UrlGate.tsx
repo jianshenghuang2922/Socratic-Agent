@@ -79,7 +79,7 @@ export function UrlGate({
     <div className="gate">
       <div className="gate-card">
         <div className="gate-badge">V1.1</div>
-        <h1 className="gate-title">丢一个链接，它出题考你</h1>
+        <h1 className="gate-title gate-title--plain">我不是做题区！</h1>
         <p className="gate-sub">
           粘贴一个<strong>网页</strong>或<strong>代码仓库</strong>地址。它读完内容后出题考你 ——
           题干锚定原文里真实存在的段落与函数，答错的题会成为后续出题的靶子。

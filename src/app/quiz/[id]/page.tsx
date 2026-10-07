@@ -28,7 +28,7 @@ const OG_IMAGE = {
   url: '/opengraph-image.png',
   width: 1200,
   height: 630,
-  alt: 'Socratic Agent —— 丢一个链接，它出题考你有没有真读懂',
+  alt: 'Socratic Agent —— 我不是做题区！',
 };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
