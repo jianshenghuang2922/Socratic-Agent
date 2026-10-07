@@ -81,8 +81,8 @@ export function UrlGate({
         <div className="gate-badge">V1.1</div>
         <h1 className="gate-title gate-title--plain">我不是做题区！</h1>
         <p className="gate-sub">
-          粘贴一个<strong>网页</strong>或<strong>代码仓库</strong>地址。它读完内容后出题考你 ——
-          题干锚定原文里真实存在的段落与函数，答错的题会成为后续出题的靶子。
+          粘贴一个<strong>网页</strong>或<strong>代码仓库</strong>地址，结合费曼学习法进行针对该 URL
+          的提问或者回答
         </p>
 
         {blocked ? (

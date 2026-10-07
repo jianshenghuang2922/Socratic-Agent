@@ -1703,6 +1703,9 @@ textarea {
   font-size: 13.5px;
   color: var(--text-2);
   line-height: 1.8;
+  /* 副标题只有这一处用。文案一改短就会把末字挤成孤行（「…提问或者回 / 答」），
+     用 balance 让两行长度接近；浏览器不支持时自动退回普通换行。 */
+  text-wrap: balance;
 }
 
 .gate-form {
