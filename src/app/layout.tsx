@@ -15,13 +15,13 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://socratic-agent-th9
  * metadata 保持**可被搜索**的描述性文案 —— 钩子没人搜，塞进 <title> 等于丢流量。
  */
 const TAGLINE = '读网页与仓库，出题考你';
-const BLURB = '选择题或简答题，题干锚定原文里真实存在的段落与函数。答错的题会成为下一题的靶子。';
+const BLURB = '粘贴一个网页或代码仓库的地址，结合费曼学习法向它提问、作答，也可以让它出题考你。';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: 'Socratic Agent · 读网页与仓库，出题考你',
   description:
-    '粘贴一个网页或代码仓库的地址，它读完内容后出题考你：选择题或简答题，题干锚定原文里真实存在的段落与函数。答错的题会成为后续出题的靶子。',
+    '粘贴一个网页或代码仓库的地址，结合费曼学习法向它提问、作答，也可以让它出题考你：选择题或简答题的题干锚定原文里真实存在的段落与函数，答错的题会成为后续出题的靶子。',
   applicationName: 'Socratic Agent',
   alternates: { canonical: '/' },
   // 分享卡片的图片由 src/app/opengraph-image.png 提供（文件约定会自动注入 og:image）。
