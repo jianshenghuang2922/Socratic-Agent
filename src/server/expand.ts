@@ -15,7 +15,7 @@
  * 必须能解释清楚「扩了没有、扩成了什么、为什么」，见 `ExpandOutcome`。
  */
 
-import { embeddingConfig, limits, type LlmOverride } from './config';
+import { limits, type LlmOverride } from './config';
 import { ApiError } from './http';
 import { chat, extractJson } from './llm';
 import type { StoredContext } from './store';
@@ -71,11 +71,6 @@ export async function expandQuery(
   // 关掉扩展时直接走纯 BM25
   if (!limits.ragExpandQuery) {
     return { terms: [], reason: '查询扩展已关闭，本轮走纯 BM25 字面检索。' };
-  }
-
-  // 已有稠密检索时不需要这套 —— 语义匹配是它本职
-  if (embeddingConfig()) {
-    return { terms: [], reason: '已启用向量检索，语义匹配足够，跳过标识符映射。' };
   }
 
   // 提问里没有中文，说明用户已经用了项目里的词汇，BM25 够用

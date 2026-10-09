@@ -203,31 +203,20 @@ export const limits = {
   trialGlobal: int('TRIAL_GLOBAL_DAILY_LIMIT', 30),
 };
 
-/**
- * 稠密向量检索的可选配置。
- * 当前环境（OpenRouter 403 / CodeBuddy 404）拿不到 embeddings 接口，
- * 因此默认关闭，纯走 BM25；填了这三项就自动启用并与 BM25 做 RRF 融合。
+/*
+ * 这里曾经有 `embeddingConfig()` —— 稠密向量检索的「配置探针」。
+ *
+ * 它是个反面教材，删掉的理由记在这儿，免得有人照着历史提交又加回来：
+ * 全仓从来没有 `embeddings.ts`，也没有 `hybridSearch`，唯一读它的地方是
+ * `expand.ts`，用途却是「配了向量检索就跳过跨语言映射」—— 于是填
+ * `EMBEDDING_*` 不会启用任何检索能力，**反而会关掉一个真能干活的能力**
+ * （跨语言标识符映射实测把 Top-1 从 1/10 提到 6/10）。
+ *
+ * 根因是把「配置是否存在」当成了「能力是否可用」。而且这个分支在将来
+ * 真实现了稠密检索时**依然是错的**：稠密语义匹配与跨语言映射是互补的，
+ * 不该二选一。所以它是纯负债，连同 `EMBEDDING_*` 配置一起删除。
+ * 真要接混合检索，从 `retrieve.ts` 已有的 `rrf()` 接。
  */
-export interface EmbeddingConfig {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-}
-
-export function embeddingConfig(): EmbeddingConfig | null {
-  const baseUrl = (
-    process.env.EMBEDDING_BASE_URL?.trim() ||
-    process.env.OPENAI_EMBEDDING_BASE_URL?.trim() ||
-    ''
-  ).replace(/\/+$/, '');
-  const apiKey =
-    process.env.EMBEDDING_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || '';
-  const model = process.env.EMBEDDING_MODEL?.trim() || '';
-
-  // 三项齐备才启用 —— 少任何一项都说明用户没打算用稠密检索
-  if (!baseUrl || !apiKey || !model) return null;
-  return { baseUrl, apiKey, model };
-}
 
 export function assertLlmConfigured(override?: LlmOverride): void {
   const { apiKey } = llmConfig(override);
