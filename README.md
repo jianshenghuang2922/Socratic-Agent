@@ -36,30 +36,6 @@ cp .env.example .env     # 填好 OPENAI_API_KEY / OPENAI_BASE_URL / LLM_MODEL
 npm run dev              # http://localhost:3000
 ```
 
-## 免费额度与自带 Key（BYOK）
-
-**先给一小份免费额度，用完再引导自带 Key**。
-
-### 用自己的 API Key（BYOK）
-
-线上部署默认**不带**共享的模型密钥 —— 一个公开地址挂一个付费 Key，几分钟就会被刷爆。
-所以应用支持让每个用户填自己的 Key：
-
-1. 打开页面右上角的 **模型设置**（徽标会显示当前用的是哪份凭据）；
-2. 选一个服务商预设（OpenRouter / DeepSeek / 硅基流动 / OpenAI）或直接填任意 OpenAI 兼容网关；
-3. 填入 API Key，保存。
-
-Key 只存在**你自己的浏览器**（localStorage），随每次请求通过 `x-llm-api-key` / `x-llm-base-url` /
-`x-llm-model` 请求头发给服务端，服务端只在这一次请求里用它调模型，不落库、不写日志。
-
-## 技术栈
-
-Next.js 15（App Router）+ TypeScript + React 19。无 UI 框架，样式手写在 `globals.css`；运行时依赖只有 `next` / `react` / `react-dom`。
-
-检索是自实现的 BM25 稀疏检索（零外部依赖），生成侧接任意 OpenAI 兼容网关。
-
-**会话状态存在进程内存里，不依赖任何数据库** —— 所以必须上常驻容器，不能上 serverless。分享测验的数据也在同一份进程内存里，因此**重新部署会让已发出的分享链接失效**。
-
 ## 架构总览
 
 ```mermaid
@@ -106,12 +82,22 @@ flowchart TB
   Routes -->|"抓取 / 浅克隆"| Src
   Llm -->|"HTTP"| Gw
 ```
+## 目录结构
 
-改代码前先认三条：
+```
+src/
+├── app/          页面与 API 路由
+├── components/   UI 组件
+├── hooks/        会话状态（useQASession）
+├── lib/          类型契约与 AgentClient 实现
+└── server/       检索、提示词、会话存储、内容解析
+scripts/
+└── start.mjs     启动包装器（读 PORT、绑 0.0.0.0）
+docs/             README 用的截图与演示素材
+render.yaml       Render 部署配置
+```
 
-- 页面组件只依赖 `AgentClient` 接口（`src/lib/types.ts`），**不直接 fetch**；`MockAgentClient` / `HttpAgentClient` 双实现。
-- **答案只存服务端**（`correctIndex` / `explanation` / `reference` 从不下发）。
-- 改行为优先改 `prompts.ts`，不要改路由。**出题逻辑只有一份**（`src/server/question.ts`），`/ask/stream` 与 `/question` 共用，不要复制。
+服务端各文件的职责见文件名与文件头注释。
 
 ## 检索管线（RAG）
 
@@ -134,6 +120,30 @@ flowchart LR
 ```
 
 索引里同时装着**项目内容**和**用户自己的历史**（作答记录、提过的问题，`origin: 'memory'`），所以「我刚才答错的那题考的是什么」也能召回到。
+
+## 免费额度与自带 Key（BYOK）
+
+**先给一小份免费额度，用完再引导自带 Key**。
+
+### 用自己的 API Key（BYOK）
+
+线上部署默认**不带**共享的模型密钥 —— 一个公开地址挂一个付费 Key，几分钟就会被刷爆。
+所以应用支持让每个用户填自己的 Key：
+
+1. 打开页面右上角的 **模型设置**（徽标会显示当前用的是哪份凭据）；
+2. 选一个服务商预设（OpenRouter / DeepSeek / 硅基流动 / OpenAI）或直接填任意 OpenAI 兼容网关；
+3. 填入 API Key，保存。
+
+Key 只存在**你自己的浏览器**（localStorage），随每次请求通过 `x-llm-api-key` / `x-llm-base-url` /
+`x-llm-model` 请求头发给服务端，服务端只在这一次请求里用它调模型，不落库、不写日志。
+
+## 技术栈
+
+Next.js 15（App Router）+ TypeScript + React 19。无 UI 框架，样式手写在 `globals.css`；运行时依赖只有 `next` / `react` / `react-dom`。
+
+检索是自实现的 BM25 稀疏检索（零外部依赖），生成侧接任意 OpenAI 兼容网关。
+
+**会话状态存在进程内存里，不依赖任何数据库** —— 所以必须上常驻容器，不能上 serverless。分享测验的数据也在同一份进程内存里，因此**重新部署会让已发出的分享链接失效**。
 
 ### 出题模式
 
@@ -235,22 +245,7 @@ sequenceDiagram
 所有 `POST` 端点都接受可选的 `x-llm-api-key` / `x-llm-base-url` / `x-llm-model` 请求头（BYOK），
 带了就用这份凭据调模型，没带就用服务端 `.env` 里的。
 
-## 目录结构
 
-```
-src/
-├── app/          页面与 API 路由
-├── components/   UI 组件
-├── hooks/        会话状态（useQASession）
-├── lib/          类型契约与 AgentClient 实现
-└── server/       检索、提示词、会话存储、内容解析
-scripts/
-└── start.mjs     启动包装器（读 PORT、绑 0.0.0.0）
-docs/             README 用的截图与演示素材
-render.yaml       Render 部署配置
-```
-
-服务端各文件的职责见文件名与文件头注释。
 
 ## 开发说明
 
